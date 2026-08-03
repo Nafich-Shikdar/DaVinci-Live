@@ -3,27 +3,22 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 import io
 import random
-import re
 
 app = FastAPI()
 
-# Standard Bengali/English Fallback Font for Sub-labels & Headers
+# Fallback Font URL for rendering sub-labels & fallback text
 FALLBACK_FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/hindsiliguri/HindSiliguri-Medium.ttf"
 
 # Random Bangla Words Sets with Complex Conjuncts (যুক্তবর্ণ)
-BANGLA_WORD_SETS = [
-    ["আকাঙ্ক্ষা", "শ্রাবণ", "সন্ধ্যা", "সূক্ষ্ম"],
-    ["স্বাধীনতা", "প্রকৃতি", "সংস্কৃতি", "উচ্ছ্বসিত"],
-    ["শ্রদ্ধাঞ্জলি", "নৈর্ব্যক্তিক", "অভিজ্ঞতা", "আকাঙ্ক্ষিত"],
-    ["প্রজ্বলিত", "সূক্ষ্মতা", "মনোমুগ্ধকর", "বিতৃষ্ণা"],
-    ["অপরিহার্য", "পরাকাষ্ঠা", "শ্রদ্ধাস্পদ", "আত্মীয়তা"]
+BANGLA_WORDS_POOL = [
+    "আকাঙ্ক্ষা", "শ্রাবণ", "সন্ধ্যা", "সূক্ষ্ম", " hisসব", 
+    "স্বাধীনতা", "সংস্কৃতি", "উচ্ছ্বসিত", "প্রজ্বলিত", "সূক্ষ্মতা", "শ্রদ্ধাঞ্জলি"
 ]
 
 # Random English Words Sets
-ENGLISH_WORD_SETS = [
-    ["Typography", "Aesthetics", "Creative", "Design"],
-    ["Minimalism", "Elegance", "Branding", "Futuristic"],
-    ["Masterpiece", "Caligraphy", "Symphony", "Modern"]
+ENGLISH_WORDS_POOL = [
+    "Typography", "Aesthetics", "Creative", "Design", 
+    "Minimalism", "Elegance", "Branding", "Calligraphy"
 ]
 
 # Download fallback font into memory
@@ -35,7 +30,7 @@ except Exception as e:
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci Professional Font Preview Engine V2 Active"}
+    return {"status": "DaVinci Font Preview Engine V3 Active"}
 
 @app.get("/preview")
 def generate_preview(
@@ -48,15 +43,12 @@ def generate_preview(
         font_res = requests.get(font_url, timeout=15)
         custom_font_bytes = io.BytesIO(font_res.content)
 
-        # Detect if font name or text contains English or Bangla
-        is_english = bool(re.search(r'[a-zA-Z]', text)) if text else bool(re.search(r'^[a-zA-Z0-9_\-\.\s]+$', font_name))
-
         # Canvas Setup (1080x1080 Square Post Template)
         width, height = 1080, 1080
         img = Image.new('RGB', (width, height), color='#0b1320') # Dark slate navy background
         draw = ImageDraw.Draw(img)
 
-        # Load Standard Fallback Font for Headers/Credits/Sub-labels
+        # Helper function for fallback font
         def get_fallback_font(size):
             if FALLBACK_FONT_BYTES:
                 FALLBACK_FONT_BYTES.seek(0)
@@ -66,12 +58,11 @@ def generate_preview(
         header_fallback = get_fallback_font(28)
         sublabel_font = get_fallback_font(22)
         credit_main_font = get_fallback_font(38)
-        credit_sub_font = get_fallback_font(24)
+        credit_sub_font = get_fallback_font(26)
 
         # -------------------------------------------------------------
         # 1. HEADER SECTION
         # -------------------------------------------------------------
-        # Load Custom Font for Title Header
         try:
             custom_font_bytes.seek(0)
             title_font = ImageFont.truetype(custom_font_bytes, size=52)
@@ -83,49 +74,49 @@ def generate_preview(
         title_w = title_bbox[2] - title_bbox[0]
         draw.text(((width - title_w) / 2, 60), title_text, fill="#ffffff", font=title_font)
 
-        # Header Subtitle
-        sub_title = "fontsfinder.netlify.app"
+        # Header Subtitle (Telegram Group Link)
+        sub_title = "t.me/PremiumBanglaFonts"
         sub_bbox = draw.textbbox((0, 0), sub_title, font=header_fallback)
         sub_w = sub_bbox[2] - sub_bbox[0]
-        draw.text(((width - sub_w) / 2, 135), sub_title, fill="#64748b", font=header_fallback)
+        draw.text(((width - sub_w) / 2, 135), sub_title, fill="#38bdf8", font=header_fallback)
 
         # Header Divider Line
         draw.line([(80, 190), (width - 80, 190)], fill="#1e293b", width=2)
 
         # -------------------------------------------------------------
-        # 2. 2x2 GRID CARDS SECTION
+        # 2. 2x2 GRID CARDS SECTION (2 Bangla + 2 English)
         # -------------------------------------------------------------
-        # Determine words to display
         if text.strip():
+            # If user provides custom text
             words = text.strip().split()
             if len(words) < 4:
                 words = (words * 4)[:4]
             else:
                 words = words[:4]
         else:
-            word_pool = ENGLISH_WORD_SETS if is_english else BANGLA_WORD_SETS
-            words = random.choice(word_pool)
+            # 2 Random Bangla words + 2 Random English words
+            selected_bn = random.sample(BANGLA_WORDS_POOL, 2)
+            selected_en = random.sample(ENGLISH_WORDS_POOL, 2)
+            words = [selected_bn[0], selected_bn[1], selected_en[0], selected_en[1]]
 
         card_positions = [
-            (60, 230, 510, 500),   # Top Left
-            (570, 230, 1020, 500),  # Top Right
-            (60, 530, 510, 800),   # Bottom Left
-            (570, 530, 1020, 800)  # Bottom Right
+            (60, 230, 510, 500),   # Top Left (Bangla 1)
+            (570, 230, 1020, 500),  # Top Right (Bangla 2)
+            (60, 530, 510, 800),   # Bottom Left (English 1)
+            (570, 530, 1020, 800)  # Bottom Right (English 2)
         ]
 
         for idx, (x1, y1, x2, y2) in enumerate(card_positions):
             card_w = x2 - x1
             card_h = y2 - y1
 
-            # Card Dark Box
+            # Card Background & Accent Line
             draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill="#131e30", outline="#1e293b", width=2)
-
-            # Card Bottom Accent Line (Cyan)
             draw.rectangle([x1 + 30, y2 - 6, x2 - 30, y2 - 2], fill="#06b6d4")
 
             word = words[idx]
 
-            # Render Main Custom Font Word
+            # Main Font Text
             try:
                 custom_font_bytes.seek(0)
                 card_font = ImageFont.truetype(custom_font_bytes, size=48)
@@ -136,12 +127,11 @@ def generate_preview(
             w_width = w_bbox[2] - w_bbox[0]
             w_height = w_bbox[3] - w_bbox[1]
 
-            # Center align main text inside card
             word_x = x1 + (card_w - w_width) / 2
             word_y = y1 + (card_h - w_height) / 2 - 25
             draw.text((word_x, word_y), word, fill="#ffffff", font=card_font)
 
-            # Render Sub-label (Meaning/Spelling in Fallback Font)
+            # Sub-label (Fallback font for pronunciation/spelling)
             sub_bbox = draw.textbbox((0, 0), word, font=sublabel_font)
             sub_w = sub_bbox[2] - sub_bbox[0]
             sub_x = x1 + (card_w - sub_w) / 2
@@ -151,20 +141,19 @@ def generate_preview(
         # -------------------------------------------------------------
         # 3. FOOTER BRANDING SECTION
         # -------------------------------------------------------------
-        # Footer Divider Line
         draw.line([(80, 840), (width - 80, 840)], fill="#1e293b", width=2)
 
-        # Primary Telegram Credit
+        # Primary Credit: Bot Username
         credit_1 = "Telegram/@davinci_live_bot"
         c1_bbox = draw.textbbox((0, 0), credit_1, font=credit_main_font)
         c1_w = c1_bbox[2] - c1_bbox[0]
-        draw.text(((width - c1_w) / 2, 880), credit_1, fill="#38bdf8", font=credit_main_font)
+        draw.text(((width - c1_w) / 2, 875), credit_1, fill="#38bdf8", font=credit_main_font)
 
-        # Secondary URL Credit
-        credit_2 = "fontsfinder.netlify.app"
+        # Secondary Credit: Telegram Group Link
+        credit_2 = "t.me/PremiumBanglaFonts"
         c2_bbox = draw.textbbox((0, 0), credit_2, font=credit_sub_font)
         c2_w = c2_bbox[2] - c2_bbox[0]
-        draw.text(((width - c2_w) / 2, 945), credit_2, fill="#64748b", font=credit_sub_font)
+        draw.text(((width - c2_w) / 2, 940), credit_2, fill="#94a3b8", font=credit_sub_font)
 
         # Output PNG Buffer
         img_byte_arr = io.BytesIO()
