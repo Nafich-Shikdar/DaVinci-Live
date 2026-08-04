@@ -60,10 +60,10 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci Multilingual Engine Active"}
+    return {"status": "DaVinci Multilingual & Auto-Detection Engine Active"}
 
 # -------------------------------------------------------------
-# HIGH-PRECISION NATIVE TTF/OTF BINARY METADATA PARSER
+# AUTO FONT DETECTION: NATIVE BINARY METADATA PARSER
 # -------------------------------------------------------------
 def parse_ttf_binary_metadata(data: bytes):
     meta = {}
@@ -88,13 +88,13 @@ def parse_ttf_binary_metadata(data: bytes):
             tables[tag_str] = (t_offset, length)
             offset += 16
 
-        # Glyph count from maxp table
+        # Glyph count
         if 'maxp' in tables:
             t_off, t_len = tables['maxp']
             if t_len >= 6 and t_off + 6 <= len(data):
                 meta['glyph_count'] = str(struct.unpack('>H', data[t_off+4:t_off+6])[0])
 
-        # Name table records
+        # Name table
         if 'name' in tables:
             t_off, t_len = tables['name']
             if t_off + 6 <= len(data):
@@ -128,15 +128,17 @@ def parse_ttf_binary_metadata(data: bytes):
                 if 1 in names: meta['family'] = names[1]
                 if 16 in names and ('family' not in meta or not meta['family']): meta['family'] = names[16]
                 if 4 in names: meta['full_name'] = names[4]
-                if 5 in names: meta['version'] = names[5]
+                if 6 in names: meta['postscript_name'] = names[6]
+                if 3 in names: meta['unique_id'] = names[3]
                 if 2 in names: meta['style'] = names[2]
                 if 17 in names and ('style' not in meta or not meta['style']): meta['style'] = names[17]
                 if 8 in names: meta['manufacturer'] = names[8]
                 if 9 in names: meta['designer'] = names[9]
                 if 0 in names: meta['copyright'] = names[0]
                 if 13 in names: meta['license'] = names[13]
+                if 5 in names: meta['version'] = names[5]
 
-        # OS/2 table for weight and embedding
+        # OS/2 table
         if 'OS/2' in tables:
             t_off, t_len = tables['OS/2']
             if t_len >= 10 and t_off + 10 <= len(data):
@@ -175,7 +177,6 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
 
         target_font_bytes = raw_bytes
 
-        # ZIP AUTO-EXTRACTOR LOGIC
         if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
             file_bytes.seek(0)
             with zipfile.ZipFile(file_bytes) as z:
@@ -196,6 +197,8 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
         info = {
             "family": "তথ্য পাওয়া যায়নি",
             "full_name": "তথ্য পাওয়া যায়নি",
+            "postscript_name": "তথ্য পাওয়া যায়নি",
+            "unique_id": "তথ্য পাওয়া যায়নি",
             "format": "TTF (TrueType)" if font_name.lower().endswith(".ttf") else ("OTF (OpenType)" if font_name.lower().endswith(".otf") else "তথ্য পাওয়া যায়নি"),
             "version": "তথ্য পাওয়া যায়নি",
             "weight": "তথ্য পাওয়া যায়নি",
@@ -230,6 +233,8 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
                                 if cleaned:
                                     if record.nameID in [1, 16] and info["family"] == "তথ্য পাওয়া যায়নি": info["family"] = cleaned
                                     elif record.nameID == 4 and info["full_name"] == "তথ্য পাওয়া যায়নি": info["full_name"] = cleaned
+                                    elif record.nameID == 6 and info["postscript_name"] == "তথ্য পাওয়া যায়নি": info["postscript_name"] = cleaned
+                                    elif record.nameID == 3 and info["unique_id"] == "তথ্য পাওয়া যায়নি": info["unique_id"] = cleaned
                                     elif record.nameID == 5 and info["version"] == "তথ্য পাওয়া যায়নি": info["version"] = cleaned
                                     elif record.nameID in [2, 17] and info["style"] == "তথ্য পাওয়া যায়নি": info["style"] = cleaned
                                     elif record.nameID == 9 and info["designer"] == "তথ্য পাওয়া যায়নি": info["designer"] = cleaned
@@ -247,12 +252,10 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
                 if 'head' in tt:
                     head = tt['head']
                     mac_epoch = datetime.datetime(1904, 1, 1)
-                    if hasattr(head, 'created') and head.created:
-                        try: info["created_date"] = (mac_epoch + datetime.timedelta(seconds=head.created)).strftime("%Y-%m-%d")
-                        except Exception: pass
-                    if hasattr(head, 'modified') and head.modified:
-                        try: info["modified_date"] = (mac_epoch + datetime.timedelta(seconds=head.modified)).strftime("%Y-%m-%d")
-                        except Exception: pass
+                    if hasattr(head, 'created') and head.created and info["created_date"] == "তথ্য পাওয়া যায়নি":
+                        info["created_date"] = (mac_epoch + datetime.timedelta(seconds=head.created)).strftime("%Y-%m-%d")
+                    if hasattr(head, 'modified') and head.modified and info["modified_date"] == "তথ্য পাওয়া যায়নি":
+                        info["modified_date"] = (mac_epoch + datetime.timedelta(seconds=head.modified)).strftime("%Y-%m-%d")
             except Exception: pass
 
         # 2. Native Binary Parser Fallback
@@ -266,7 +269,7 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
         return {"error": str(e)}
 
 # -------------------------------------------------------------
-# PREVIEW RENDERER
+# PREVIEW RENDERER WITH AUTO-DETECTED HEADER NAME
 # -------------------------------------------------------------
 @app.get("/preview")
 def generate_preview(
@@ -281,7 +284,9 @@ def generate_preview(
     try:
         font_res = requests.get(font_url, timeout=20)
         file_bytes = io.BytesIO(font_res.content)
+        raw_bytes = file_bytes.getvalue()
 
+        # ZIP AUTO-UNZIP LOGIC
         if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
             file_bytes.seek(0)
             with zipfile.ZipFile(file_bytes) as z:
@@ -294,12 +299,23 @@ def generate_preview(
                                 target_file = f
                                 break
                     font_name = target_file.split('/')[-1]
-                    custom_font_bytes = io.BytesIO(z.read(target_file))
+                    raw_bytes = z.read(target_file)
+                    custom_font_bytes = io.BytesIO(raw_bytes)
                 else:
                     return {"error": "No .ttf or .otf found in zip"}
         else:
             file_bytes.seek(0)
             custom_font_bytes = file_bytes
+
+        # AUTO FONT DETECTION FOR HEADER
+        detected_header_name = font_name
+        try:
+            binary_meta = parse_ttf_binary_metadata(raw_bytes)
+            real_name = binary_meta.get('full_name') or binary_meta.get('family')
+            if real_name and len(real_name.strip()) > 0:
+                detected_header_name = real_name.strip()
+        except Exception:
+            pass
 
         width, height = 1080, 1080
         
@@ -316,10 +332,11 @@ def generate_preview(
         sublabel_font = get_hind_siliguri_font(22)
         credit_user_font = get_hind_siliguri_font(30)
 
+        # Draw Header using Detected Font Name
         header_font = get_hind_siliguri_font(42)
-        title_bbox = draw.textbbox((0, 0), font_name, font=header_font)
+        title_bbox = draw.textbbox((0, 0), detected_header_name, font=header_font)
         title_w = title_bbox[2] - title_bbox[0]
-        draw.text(((width - title_w) / 2, 55), font_name, fill=text_c, font=header_font)
+        draw.text(((width - title_w) / 2, 55), detected_header_name, fill=text_c, font=header_font)
         draw.line([(80, 135), (width - 80, 135)], fill=border_c, width=2)
 
         if text.strip():
