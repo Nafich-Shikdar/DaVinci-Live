@@ -4,6 +4,12 @@ import requests
 import io
 import random
 import zipfile
+import datetime
+
+try:
+    from fontTools.ttLib import TTFont
+except ImportError:
+    TTFont = None
 
 app = FastAPI()
 
@@ -53,8 +59,109 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci Multilingual & Zip Engine Active"}
+    return {"status": "DaVinci Multilingual Engine Active"}
 
+# -------------------------------------------------------------
+# NEW FEATURE: FONT METADATA EXTRACTOR
+# -------------------------------------------------------------
+@app.get("/font_info")
+def get_font_info(font_url: str, font_name: str = "Font.ttf"):
+    try:
+        font_res = requests.get(font_url, timeout=20)
+        file_bytes = io.BytesIO(font_res.content)
+        size_bytes = len(file_bytes.getvalue())
+
+        info = {
+            "family": "তথ্য পাওয়া যায়নি",
+            "full_name": "তথ্য পাওয়া যায়নি",
+            "format": "TTF" if font_name.lower().endswith(".ttf") else ("OTF" if font_name.lower().endswith(".otf") else "তথ্য পাওয়া যায়নি"),
+            "version": "তথ্য পাওয়া যায়নি",
+            "weight": "তথ্য পাওয়া যায়নি",
+            "style": "তথ্য পাওয়া যায়নি",
+            "unicode_support": "তথ্য পাওয়া যায়নি",
+            "glyph_count": "তথ্য পাওয়া যায়নি",
+            "designer": "তথ্য পাওয়া যায়নি",
+            "manufacturer": "তথ্য পাওয়া যায়নি",
+            "copyright": "তথ্য পাওয়া যায়নি",
+            "license": "তথ্য পাওয়া যায়নি",
+            "file_size": f"{round(size_bytes / 1024, 2)} KB" if size_bytes < 1048576 else f"{round(size_bytes / 1048576, 2)} MB",
+            "embedding_allowed": "তথ্য পাওয়া যায়নি",
+            "created_date": "তথ্য পাওয়া যায়নি",
+            "modified_date": "তথ্য পাওয়া যায়নি"
+        }
+
+        if TTFont:
+            try:
+                file_bytes.seek(0)
+                font = TTFont(file_bytes)
+
+                if font.sfntVersion == 'OTTO':
+                    info["format"] = "OTF (OpenType)"
+                elif font.sfntVersion in ['\x00\x01\x00\x00', 'true']:
+                    info["format"] = "TTF (TrueType)"
+
+                if 'maxp' in font:
+                    info["glyph_count"] = str(font['maxp'].numGlyphs)
+
+                if 'name' in font:
+                    names = {}
+                    for record in font['name'].names:
+                        try:
+                            val = record.toUnicode()
+                            if record.nameID not in names or record.platformID == 3:
+                                names[record.nameID] = val
+                        except Exception:
+                            pass
+                    
+                    if 1 in names: info["family"] = names[1]
+                    if 4 in names: info["full_name"] = names[4]
+                    if 5 in names: info["version"] = names[5]
+                    if 2 in names: info["style"] = names[2]
+                    if 9 in names: info["designer"] = names[9]
+                    if 8 in names: info["manufacturer"] = names[8]
+                    if 0 in names: info["copyright"] = names[0]
+                    if 13 in names: info["license"] = names[13]
+
+                if 'OS/2' in font:
+                    os2 = font['OS/2']
+                    w_class = getattr(os2, 'usWeightClass', None)
+                    if w_class:
+                        weights = {100: "Thin (100)", 200: "Extra Light (200)", 300: "Light (300)", 400: "Regular (400)", 500: "Medium (500)", 600: "Semi Bold (600)", 700: "Bold (700)", 800: "Extra Bold (800)", 900: "Black (900)"}
+                        info["weight"] = weights.get(w_class, str(w_class))
+                    
+                    fsType = getattr(os2, 'fsType', None)
+                    if fsType is not None:
+                        if fsType == 0 or not (fsType & 0x000E):
+                            info["embedding_allowed"] = "হ্যাঁ (Installable / Allowed)"
+                        elif fsType & 0x0002:
+                            info["embedding_allowed"] = "সীমিত (Restricted)"
+                        else:
+                            info["embedding_allowed"] = "হ্যাঁ (Editable / Preview)"
+
+                if 'cmap' in font:
+                    unicode_cmaps = [table for table in font['cmap'].tables if table.isUnicode()]
+                    info["unicode_support"] = "হ্যাঁ (Unicode Supported)" if unicode_cmaps else "ANSI / Non-Unicode"
+
+                if 'head' in font:
+                    head = font['head']
+                    mac_epoch = datetime.datetime(1904, 1, 1)
+                    if hasattr(head, 'created') and head.created:
+                        c_date = mac_epoch + datetime.timedelta(seconds=head.created)
+                        info["created_date"] = c_date.strftime("%Y-%m-%d")
+                    if hasattr(head, 'modified') and head.modified:
+                        m_date = mac_epoch + datetime.timedelta(seconds=head.modified)
+                        info["modified_date"] = m_date.strftime("%Y-%m-%d")
+
+            except Exception:
+                pass
+
+        return info
+    except Exception as e:
+        return {"error": str(e)}
+
+# -------------------------------------------------------------
+# EXISTING PREVIEW RENDERER (UNTOUCHED & PRESERVED)
+# -------------------------------------------------------------
 @app.get("/preview")
 def generate_preview(
     font_url: str,
@@ -69,7 +176,6 @@ def generate_preview(
         font_res = requests.get(font_url, timeout=20)
         file_bytes = io.BytesIO(font_res.content)
 
-        # ZIP FILE AUTO-EXTRACTOR LOGIC
         if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
             file_bytes.seek(0)
             with zipfile.ZipFile(file_bytes) as z:
@@ -95,7 +201,7 @@ def generate_preview(
             canvas_bg, card_bg, border_c, text_c, sub_c = "#f8fafc", "#ffffff", "#e2e8f0", "#0f172a", "#64748b"
         elif bg_theme == "transparent":
             canvas_bg, card_bg, border_c, text_c, sub_c = (0,0,0,0), "#131e30", "#1e293b", "#ffffff", "#64748b"
-        else: # Default Dark
+        else:
             canvas_bg, card_bg, border_c, text_c, sub_c = "#0b1320", "#131e30", "#1e293b", "#ffffff", "#64748b"
 
         img = Image.new('RGBA' if bg_theme == "transparent" else 'RGB', (width, height), color=canvas_bg)
@@ -104,14 +210,12 @@ def generate_preview(
         sublabel_font = get_hind_siliguri_font(22)
         credit_user_font = get_hind_siliguri_font(30)
 
-        # HEADER
         header_font = get_hind_siliguri_font(42)
         title_bbox = draw.textbbox((0, 0), font_name, font=header_font)
         title_w = title_bbox[2] - title_bbox[0]
         draw.text(((width - title_w) / 2, 55), font_name, fill=text_c, font=header_font)
         draw.line([(80, 135), (width - 80, 135)], fill=border_c, width=2)
 
-        # WORD SELECTION
         if text.strip():
             words = text.strip().split()
             if len(words) < 4:
@@ -128,7 +232,6 @@ def generate_preview(
             else:
                 words = [random.choice(BANGLA_WORDS_POOL), random.choice(ENGLISH_WORDS_POOL), random.choice(ARABIC_WORDS_POOL), random.choice(GLOBAL_RANDOM_WORDS)]
 
-        # 2x2 CARDS
         card_positions = [
             (60, 170, 510, 480),
             (570, 170, 1020, 480),
@@ -156,7 +259,6 @@ def generate_preview(
             sub_w = sub_bbox[2] - sub_bbox[0]
             draw.text((x1 + (card_w - sub_w) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
 
-        # FOOTER
         draw.line([(80, 860), (width - 80, 860)], fill=border_c, width=2)
         user_credit_text = f"Preview Generated by: {requested_by}"
         uc_bbox = draw.textbbox((0, 0), user_credit_text, font=credit_user_font)
