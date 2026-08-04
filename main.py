@@ -63,7 +63,107 @@ def home():
     return {"status": "DaVinci Multilingual Engine Active"}
 
 # -------------------------------------------------------------
-# FONT METADATA EXTRACTOR (100% RELIABLE WITH FILENAME FALLBACK)
+# HIGH-PRECISION NATIVE TTF/OTF BINARY METADATA PARSER
+# -------------------------------------------------------------
+def parse_ttf_binary_metadata(data: bytes):
+    meta = {}
+    if len(data) < 12:
+        return meta
+    
+    sfnt_version = data[:4]
+    if sfnt_version == b'OTTO':
+        meta['format'] = 'OTF (OpenType)'
+    elif sfnt_version in [b'\x00\x01\x00\x00', b'true']:
+        meta['format'] = 'TTF (TrueType)'
+
+    try:
+        num_tables = struct.unpack('>H', data[4:6])[0]
+        tables = {}
+        offset = 12
+        for _ in range(num_tables):
+            if offset + 16 > len(data):
+                break
+            tag, check_sum, t_offset, length = struct.unpack('>4sIII', data[offset:offset+16])
+            tag_str = tag.decode('latin1', errors='ignore')
+            tables[tag_str] = (t_offset, length)
+            offset += 16
+
+        # Glyph count from maxp table
+        if 'maxp' in tables:
+            t_off, t_len = tables['maxp']
+            if t_len >= 6 and t_off + 6 <= len(data):
+                meta['glyph_count'] = str(struct.unpack('>H', data[t_off+4:t_off+6])[0])
+
+        # Name table records
+        if 'name' in tables:
+            t_off, t_len = tables['name']
+            if t_off + 6 <= len(data):
+                fmt, count, string_offset = struct.unpack('>HHH', data[t_off:t_off+6])
+                records_start = t_off + 6
+                storage_start = t_off + string_offset
+
+                names = {}
+                for i in range(count):
+                    rec_off = records_start + i * 12
+                    if rec_off + 12 > len(data):
+                        break
+                    p_id, e_id, l_id, n_id, length, s_off = struct.unpack('>HHHHHH', data[rec_off:rec_off+12])
+                    str_start = storage_start + s_off
+                    if str_start + length <= len(data):
+                        raw_str = data[str_start:str_start+length]
+                        val = None
+                        for enc in ['utf-16-be', 'utf-8', 'latin1', 'cp1252', 'mac-roman']:
+                            try:
+                                decoded = raw_str.decode(enc)
+                                cleaned = decoded.replace('\x00', '').strip()
+                                if cleaned and any(c.isalnum() for c in cleaned):
+                                    val = cleaned
+                                    break
+                            except Exception:
+                                pass
+                        
+                        if val and (n_id not in names or p_id == 3):
+                            names[n_id] = val
+
+                if 1 in names: meta['family'] = names[1]
+                if 16 in names and ('family' not in meta or not meta['family']): meta['family'] = names[16]
+                if 4 in names: meta['full_name'] = names[4]
+                if 5 in names: meta['version'] = names[5]
+                if 2 in names: meta['style'] = names[2]
+                if 17 in names and ('style' not in meta or not meta['style']): meta['style'] = names[17]
+                if 8 in names: meta['manufacturer'] = names[8]
+                if 9 in names: meta['designer'] = names[9]
+                if 0 in names: meta['copyright'] = names[0]
+                if 13 in names: meta['license'] = names[13]
+
+        # OS/2 table for weight and embedding
+        if 'OS/2' in tables:
+            t_off, t_len = tables['OS/2']
+            if t_len >= 10 and t_off + 10 <= len(data):
+                us_weight_class = struct.unpack('>H', data[t_off+4:t_off+6])[0]
+                weights = {
+                    100: "Thin (100)", 200: "Extra Light (200)", 300: "Light (300)", 
+                    400: "Regular (400)", 500: "Medium (500)", 600: "Semi Bold (600)", 
+                    700: "Bold (700)", 800: "Extra Bold (800)", 900: "Black (900)"
+                }
+                meta['weight'] = weights.get(us_weight_class, f"Weight {us_weight_class}")
+
+                fs_type = struct.unpack('>H', data[t_off+8:t_off+10])[0]
+                if fs_type == 0 or not (fs_type & 0x000E):
+                    meta['embedding_allowed'] = "হ্যাঁ (Installable / Unlimited)"
+                elif fs_type & 0x0002:
+                    meta['embedding_allowed'] = "সীমিত (Restricted License)"
+                elif fs_type & 0x0004:
+                    meta['embedding_allowed'] = "হ্যাঁ (Preview & Print)"
+                elif fs_type & 0x0008:
+                    meta['embedding_allowed'] = "হ্যাঁ (Editable Embedding)"
+    except Exception:
+        pass
+
+    return meta
+
+# -------------------------------------------------------------
+# FONT METADATA API
 # -------------------------------------------------------------
 @app.get("/font_info")
 def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = ""):
@@ -74,9 +174,8 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
         file_bytes = io.BytesIO(raw_bytes)
 
         target_font_bytes = raw_bytes
-        selected_font_filename = font_name
 
-        # ZIP AUTO-EXTRACTOR
+        # ZIP AUTO-EXTRACTOR LOGIC
         if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
             file_bytes.seek(0)
             with zipfile.ZipFile(file_bytes) as z:
@@ -88,86 +187,61 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
                             if inner_font.lower() in f.lower() or f.lower().endswith(inner_font.lower()):
                                 target_file = f
                                 break
-                    selected_font_filename = target_file.split('/')[-1]
+                    font_name = target_file.split('/')[-1]
                     target_font_bytes = z.read(target_file)
                     size_bytes = len(target_font_bytes)
                 else:
                     return {"error": "No .ttf or .otf found in zip"}
 
-        # Format detection
-        fmt = "TTF (TrueType)"
-        if selected_font_filename.lower().endswith(".otf"):
-            fmt = "OTF (OpenType)"
-
         info = {
             "family": "তথ্য পাওয়া যায়নি",
             "full_name": "তথ্য পাওয়া যায়নি",
-            "format": fmt,
-            "version": "1.00",
-            "weight": "Regular (400)",
-            "style": "Regular",
-            "unicode_support": "হ্যাঁ (Unicode Supported)",
+            "format": "TTF (TrueType)" if font_name.lower().endswith(".ttf") else ("OTF (OpenType)" if font_name.lower().endswith(".otf") else "তথ্য পাওয়া যায়নি"),
+            "version": "তথ্য পাওয়া যায়নি",
+            "weight": "তথ্য পাওয়া যায়নি",
+            "style": "তথ্য পাওয়া যায়নি",
+            "unicode_support": "তথ্য পাওয়া যায়নি",
             "glyph_count": "তথ্য পাওয়া যায়নি",
             "designer": "তথ্য পাওয়া যায়নি",
             "manufacturer": "তথ্য পাওয়া যায়নি",
             "copyright": "তথ্য পাওয়া যায়নি",
             "license": "তথ্য পাওয়া যায়নি",
             "file_size": f"{round(size_bytes / 1024, 2)} KB" if size_bytes < 1048576 else f"{round(size_bytes / 1048576, 2)} MB",
-            "embedding_allowed": "হ্যাঁ (Installable / Unlimited)",
+            "embedding_allowed": "তথ্য পাওয়া যায়নি",
             "created_date": "তথ্য পাওয়া যায়নি",
             "modified_date": "তথ্য পাওয়া যায়নি"
         }
 
-        # 1. Parse using fontTools if available
+        # 1. fontTools Extraction
         if TTFont:
             try:
-                tt = TTFont(io.BytesIO(target_font_bytes), lazy=True)
-                
-                if hasattr(tt, 'sfntVersion'):
-                    if tt.sfntVersion == 'OTTO':
-                        info["format"] = "OTF (OpenType)"
-                    elif tt.sfntVersion in ['\x00\x01\x00\x00', 'true']:
-                        info["format"] = "TTF (TrueType)"
-
-                if 'maxp' in tt and hasattr(tt['maxp'], 'numGlyphs'):
-                    info["glyph_count"] = str(tt['maxp'].numGlyphs)
-
+                tt = TTFont(io.BytesIO(target_font_bytes))
                 if 'name' in tt:
-                    for rec in tt['name'].names:
+                    for record in tt['name'].names:
                         try:
-                            val = rec.toUnicode()
-                            if not val:
-                                for enc in ['utf-16-be', 'utf-8', 'latin1', 'cp1252', 'mac_roman']:
-                                    try:
-                                        val = rec.string.decode(enc)
-                                        if val: break
+                            val = None
+                            try: val = record.toUnicode()
+                            except Exception:
+                                for enc in ['utf-16-be', 'utf-8', 'mac-roman', 'latin1']:
+                                    try: val = record.string.decode(enc); break
                                     except Exception: pass
                             if val:
                                 cleaned = val.replace('\x00', '').strip()
                                 if cleaned:
-                                    if rec.nameID in (1, 16) and info["family"] == "তথ্য পাওয়া যায়নি":
-                                        info["family"] = cleaned
-                                    elif rec.nameID == 4 and info["full_name"] == "তথ্য পাওয়া যায়নি":
-                                        info["full_name"] = cleaned
-                                    elif rec.nameID == 5 and info["version"] == "তথ্য পাওয়া যায়নি":
-                                        info["version"] = cleaned
-                                    elif rec.nameID in (2, 17) and info["style"] == "তথ্য পাওয়া যায়নি":
-                                        info["style"] = cleaned
-                                    elif rec.nameID == 9 and info["designer"] == "তথ্য পাওয়া যায়নি":
-                                        info["designer"] = cleaned
-                                    elif rec.nameID == 8 and info["manufacturer"] == "তথ্য পাওয়া যায়নি":
-                                        info["manufacturer"] = cleaned
-                                    elif rec.nameID == 0 and info["copyright"] == "তথ্য পাওয়া যায়নি":
-                                        info["copyright"] = cleaned
-                                    elif rec.nameID in (13, 14) and info["license"] == "তথ্য পাওয়া যায়নি":
-                                        info["license"] = cleaned
+                                    if record.nameID in [1, 16] and info["family"] == "তথ্য পাওয়া যায়নি": info["family"] = cleaned
+                                    elif record.nameID == 4 and info["full_name"] == "তথ্য পাওয়া যায়নি": info["full_name"] = cleaned
+                                    elif record.nameID == 5 and info["version"] == "তথ্য পাওয়া যায়নি": info["version"] = cleaned
+                                    elif record.nameID in [2, 17] and info["style"] == "তথ্য পাওয়া যায়নি": info["style"] = cleaned
+                                    elif record.nameID == 9 and info["designer"] == "তথ্য পাওয়া যায়নি": info["designer"] = cleaned
+                                    elif record.nameID == 8 and info["manufacturer"] == "তথ্য পাওয়া যায়নি": info["manufacturer"] = cleaned
+                                    elif record.nameID == 0 and info["copyright"] == "তথ্য পাওয়া যায়নি": info["copyright"] = cleaned
+                                    elif record.nameID in [13, 14] and info["license"] == "তথ্য পাওয়া যায়নি": info["license"] = cleaned
                         except Exception: pass
 
                 if 'cmap' in tt:
                     try:
                         best = tt.getBestCmap()
-                        if best:
-                            info["unicode_support"] = f"হ্যাঁ ({len(best)} Unicodes Supported)"
+                        if best: info["unicode_support"] = f"হ্যাঁ ({len(best)} Unicodes Supported)"
                     except Exception: pass
 
                 if 'head' in tt:
@@ -179,15 +253,13 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
                     if hasattr(head, 'modified') and head.modified:
                         try: info["modified_date"] = (mac_epoch + datetime.timedelta(seconds=head.modified)).strftime("%Y-%m-%d")
                         except Exception: pass
-
             except Exception: pass
 
-        # 2. Smart Filename Fallback (Guarantees Name is NEVER Empty)
-        clean_name = selected_font_filename.rsplit('.', 1)[0].replace('_', ' ').replace('-', ' ').strip()
-        if info["family"] == "তথ্য পাওয়া যায়নি":
-            info["family"] = clean_name
-        if info["full_name"] == "তথ্য পাওয়া যায়নি":
-            info["full_name"] = clean_name
+        # 2. Native Binary Parser Fallback
+        binary_meta = parse_ttf_binary_metadata(target_font_bytes)
+        for k, v in binary_meta.items():
+            if v and (k not in info or info[k] == "তথ্য পাওয়া যায়নি"):
+                info[k] = v
 
         return info
     except Exception as e:
@@ -291,7 +363,7 @@ def generate_preview(
 
             sub_bbox = draw.textbbox((0, 0), word, font=sublabel_font)
             sub_w = sub_bbox[2] - sub_bbox[0]
-            draw.text((sub_x if 'sub_x' in locals() else x1 + (card_w - sub_w) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
+            draw.text((x1 + (card_w - sub_w) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
 
         draw.line([(80, 860), (width - 80, 860)], fill=border_c, width=2)
         user_credit_text = f"Preview Generated by: {requested_by}"
