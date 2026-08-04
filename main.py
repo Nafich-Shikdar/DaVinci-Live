@@ -23,6 +23,24 @@ ENGLISH_WORDS_POOL = ["Typography", "Aesthetics", "Creative", "Design", "Minimal
 ARABIC_WORDS_POOL = ["الخط العربي", "جماليات", "إبداع", "تصميم", "أصالة", "فنون", "خطاط", "الخط"]
 GLOBAL_RANDOM_WORDS = ["सुंदरता", "Tipografía", "Типографика", "デザイン", "Élégance", "حُسن", "Kalligraphie"]
 
+# RAM MEMORY CACHE FOR FAST FONT LOADING
+FONT_BYTES_CACHE = {}
+MAX_CACHE_SIZE = 30
+
+def fetch_font_bytes_cached(font_url: str) -> bytes:
+    if font_url in FONT_BYTES_CACHE:
+        return FONT_BYTES_CACHE[font_url]
+    
+    res = requests.get(font_url, timeout=15)
+    raw_bytes = res.content
+    
+    if len(FONT_BYTES_CACHE) >= MAX_CACHE_SIZE:
+        first_key = next(iter(FONT_BYTES_CACHE))
+        FONT_BYTES_CACHE.pop(first_key)
+        
+    FONT_BYTES_CACHE[font_url] = raw_bytes
+    return raw_bytes
+
 try:
     hs_res = requests.get(HIND_SILIGURI_URL, timeout=10)
     HIND_SILIGURI_BYTES = io.BytesIO(hs_res.content)
@@ -35,8 +53,8 @@ def get_hind_siliguri_font(size):
         return ImageFont.truetype(HIND_SILIGURI_BYTES, size=size)
     return ImageFont.load_default()
 
-def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, min_size=26):
-    for size in range(start_size, min_size - 1, -3):
+def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, min_size=20):
+    for size in range(start_size, min_size - 1, -2):
         try:
             font_bytes.seek(0)
             font = ImageFont.truetype(font_bytes, size=size)
@@ -60,7 +78,7 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci Multilingual & Glyph Engine Active"}
+    return {"status": "DaVinci High-Speed Multilingual Engine Active"}
 
 # -------------------------------------------------------------
 # HIGH-PRECISION NATIVE TTF/OTF BINARY METADATA PARSER
@@ -167,8 +185,7 @@ def parse_ttf_binary_metadata(data: bytes):
 @app.get("/font_info")
 def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = ""):
     try:
-        font_res = requests.get(font_url, timeout=20)
-        raw_bytes = font_res.content
+        raw_bytes = fetch_font_bytes_cached(font_url)
         size_bytes = len(raw_bytes)
         file_bytes = io.BytesIO(raw_bytes)
 
@@ -266,13 +283,12 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
         return {"error": str(e)}
 
 # -------------------------------------------------------------
-# NEW FEATURE: GLYPH INSPECTOR & PREVIEW GENERATOR
+# GLYPH INSPECTOR & PREVIEW GENERATOR
 # -------------------------------------------------------------
 @app.get("/glyph_info")
 def get_glyph_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = "", char: str = ""):
     try:
-        font_res = requests.get(font_url, timeout=20)
-        raw_bytes = font_res.content
+        raw_bytes = fetch_font_bytes_cached(font_url)
         file_bytes = io.BytesIO(raw_bytes)
         target_font_bytes = raw_bytes
 
@@ -334,8 +350,7 @@ def generate_glyph_preview(
     requested_by: str = "User"
 ):
     try:
-        font_res = requests.get(font_url, timeout=20)
-        raw_bytes = font_res.content
+        raw_bytes = fetch_font_bytes_cached(font_url)
         file_bytes = io.BytesIO(raw_bytes)
         target_font_bytes = raw_bytes
 
@@ -362,14 +377,12 @@ def generate_glyph_preview(
         sub_font = get_hind_siliguri_font(22)
         credit_font = get_hind_siliguri_font(28)
 
-        # Single Char Zoomed Mode
         if char and len(char.strip()) > 0:
             target_char = char.strip()[0]
             title_text = f"Single Glyph View: '{target_char}'"
             draw.text((60, 45), title_text, fill="#ffffff", font=header_font)
             draw.line([(60, 105), (width - 60, 105)], fill="#1e293b", width=2)
 
-            # Central Big Card
             draw.rounded_rectangle([240, 180, 840, 780], radius=24, fill="#131e30", outline="#06b6d4", width=3)
             
             big_custom_font = get_auto_fit_font(font_io, target_char, max_width=500, max_height=500, start_size=320, min_size=60)
@@ -381,7 +394,6 @@ def generate_glyph_preview(
             code_text = f"Char: {target_char}   |   Unicode: {hex_code}"
             draw.text((340, 810), code_text, fill="#94a3b8", font=header_font)
 
-        # Categorized Grid Sheet Mode
         else:
             title_text = f"Glyph Collection Sheet: {font_name}"
             draw.text((60, 45), title_text, fill="#ffffff", font=header_font)
@@ -420,7 +432,6 @@ def generate_glyph_preview(
                 except Exception:
                     draw.text((x1 + 35, y1 + 25), "?", fill="#ef4444", font=sub_font)
 
-        # Footer Credit
         draw.line([(60, 880), (width - 60, 880)], fill="#1e293b", width=2)
         u_text = f"Glyph Preview Requested by: {requested_by}"
         draw.text((60, 910), u_text, fill="#38bdf8", font=credit_font)
@@ -446,9 +457,8 @@ def generate_preview(
     inner_font: str = ""
 ):
     try:
-        font_res = requests.get(font_url, timeout=20)
-        file_bytes = io.BytesIO(font_res.content)
-        raw_bytes = file_bytes.getvalue()
+        raw_bytes = fetch_font_bytes_cached(font_url)
+        file_bytes = io.BytesIO(raw_bytes)
 
         if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
             file_bytes.seek(0)
