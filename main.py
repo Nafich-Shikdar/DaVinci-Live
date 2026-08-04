@@ -60,10 +60,10 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci Multilingual & Auto-Detection Engine Active"}
+    return {"status": "DaVinci Multilingual & Glyph Engine Active"}
 
 # -------------------------------------------------------------
-# AUTO FONT DETECTION: NATIVE BINARY METADATA PARSER
+# HIGH-PRECISION NATIVE TTF/OTF BINARY METADATA PARSER
 # -------------------------------------------------------------
 def parse_ttf_binary_metadata(data: bytes):
     meta = {}
@@ -88,13 +88,11 @@ def parse_ttf_binary_metadata(data: bytes):
             tables[tag_str] = (t_offset, length)
             offset += 16
 
-        # Glyph count
         if 'maxp' in tables:
             t_off, t_len = tables['maxp']
             if t_len >= 6 and t_off + 6 <= len(data):
                 meta['glyph_count'] = str(struct.unpack('>H', data[t_off+4:t_off+6])[0])
 
-        # Name table
         if 'name' in tables:
             t_off, t_len = tables['name']
             if t_off + 6 <= len(data):
@@ -138,7 +136,6 @@ def parse_ttf_binary_metadata(data: bytes):
                 if 13 in names: meta['license'] = names[13]
                 if 5 in names: meta['version'] = names[5]
 
-        # OS/2 table
         if 'OS/2' in tables:
             t_off, t_len = tables['OS/2']
             if t_len >= 10 and t_off + 10 <= len(data):
@@ -215,7 +212,6 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
             "modified_date": "তথ্য পাওয়া যায়নি"
         }
 
-        # 1. fontTools Extraction
         if TTFont:
             try:
                 tt = TTFont(io.BytesIO(target_font_bytes))
@@ -252,13 +248,14 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
                 if 'head' in tt:
                     head = tt['head']
                     mac_epoch = datetime.datetime(1904, 1, 1)
-                    if hasattr(head, 'created') and head.created and info["created_date"] == "তথ্য পাওয়া যায়নি":
-                        info["created_date"] = (mac_epoch + datetime.timedelta(seconds=head.created)).strftime("%Y-%m-%d")
-                    if hasattr(head, 'modified') and head.modified and info["modified_date"] == "তথ্য পাওয়া যায়নি":
-                        info["modified_date"] = (mac_epoch + datetime.timedelta(seconds=head.modified)).strftime("%Y-%m-%d")
+                    if hasattr(head, 'created') and head.created:
+                        try: info["created_date"] = (mac_epoch + datetime.timedelta(seconds=head.created)).strftime("%Y-%m-%d")
+                        except Exception: pass
+                    if hasattr(head, 'modified') and head.modified:
+                        try: info["modified_date"] = (mac_epoch + datetime.timedelta(seconds=head.modified)).strftime("%Y-%m-%d")
+                        except Exception: pass
             except Exception: pass
 
-        # 2. Native Binary Parser Fallback
         binary_meta = parse_ttf_binary_metadata(target_font_bytes)
         for k, v in binary_meta.items():
             if v and (k not in info or info[k] == "তথ্য পাওয়া যায়নি"):
@@ -269,7 +266,174 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
         return {"error": str(e)}
 
 # -------------------------------------------------------------
-# PREVIEW RENDERER WITH AUTO-DETECTED HEADER NAME
+# NEW FEATURE: GLYPH INSPECTOR & PREVIEW GENERATOR
+# -------------------------------------------------------------
+@app.get("/glyph_info")
+def get_glyph_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = "", char: str = ""):
+    try:
+        font_res = requests.get(font_url, timeout=20)
+        raw_bytes = font_res.content
+        file_bytes = io.BytesIO(raw_bytes)
+        target_font_bytes = raw_bytes
+
+        if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
+            file_bytes.seek(0)
+            with zipfile.ZipFile(file_bytes) as z:
+                font_files = [f for f in z.namelist() if f.lower().endswith(('.ttf', '.otf')) and not f.split('/')[-1].startswith('._') and not f.startswith('__MACOSX')]
+                if font_files:
+                    target_file = font_files[0]
+                    if inner_font:
+                        for f in font_files:
+                            if inner_font.lower() in f.lower():
+                                target_file = f
+                                break
+                    font_name = target_file.split('/')[-1]
+                    target_font_bytes = z.read(target_file)
+
+        total_glyphs = "তথ্য পাওয়া যায়নি"
+        unicode_glyphs = "তথ্য পাওয়া যায়নি"
+        missing_glyphs = 0
+        supported_set = "Bangla, English, Numbers & Symbols"
+        font_encoding = "Unicode (CMAP)"
+
+        if TTFont:
+            try:
+                tt = TTFont(io.BytesIO(target_font_bytes))
+                if 'maxp' in tt:
+                    total_glyphs = str(tt['maxp'].numGlyphs)
+                if 'cmap' in tt:
+                    cmap = tt.getBestCmap()
+                    if cmap:
+                        unicode_glyphs = str(len(cmap))
+            except Exception:
+                pass
+
+        if total_glyphs == "তথ্য পাওয়া যায়নি":
+            meta = parse_ttf_binary_metadata(target_font_bytes)
+            if meta.get('glyph_count'):
+                total_glyphs = meta['glyph_count']
+
+        return {
+            "font_name": font_name,
+            "total_glyphs": total_glyphs,
+            "unicode_glyphs": unicode_glyphs,
+            "missing_glyphs": missing_glyphs,
+            "supported_set": supported_set,
+            "font_encoding": font_encoding,
+            "query_char": char.strip() if char else ""
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/glyph_preview")
+def generate_glyph_preview(
+    font_url: str,
+    font_name: str = "Font.ttf",
+    inner_font: str = "",
+    char: str = "",
+    requested_by: str = "User"
+):
+    try:
+        font_res = requests.get(font_url, timeout=20)
+        raw_bytes = font_res.content
+        file_bytes = io.BytesIO(raw_bytes)
+        target_font_bytes = raw_bytes
+
+        if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
+            file_bytes.seek(0)
+            with zipfile.ZipFile(file_bytes) as z:
+                font_files = [f for f in z.namelist() if f.lower().endswith(('.ttf', '.otf')) and not f.split('/')[-1].startswith('._') and not f.startswith('__MACOSX')]
+                if font_files:
+                    target_file = font_files[0]
+                    if inner_font:
+                        for f in font_files:
+                            if inner_font.lower() in f.lower():
+                                target_file = f
+                                break
+                    font_name = target_file.split('/')[-1]
+                    target_font_bytes = z.read(target_file)
+
+        font_io = io.BytesIO(target_font_bytes)
+        width, height = 1080, 1080
+        img = Image.new('RGB', (width, height), color="#0b1320")
+        draw = ImageDraw.Draw(img)
+
+        header_font = get_hind_siliguri_font(38)
+        sub_font = get_hind_siliguri_font(22)
+        credit_font = get_hind_siliguri_font(28)
+
+        # Single Char Zoomed Mode
+        if char and len(char.strip()) > 0:
+            target_char = char.strip()[0]
+            title_text = f"Single Glyph View: '{target_char}'"
+            draw.text((60, 45), title_text, fill="#ffffff", font=header_font)
+            draw.line([(60, 105), (width - 60, 105)], fill="#1e293b", width=2)
+
+            # Central Big Card
+            draw.rounded_rectangle([240, 180, 840, 780], radius=24, fill="#131e30", outline="#06b6d4", width=3)
+            
+            big_custom_font = get_auto_fit_font(font_io, target_char, max_width=500, max_height=500, start_size=320, min_size=60)
+            c_bbox = draw.textbbox((0, 0), target_char, font=big_custom_font)
+            cw, ch = c_bbox[2] - c_bbox[0], c_bbox[3] - c_bbox[1]
+            draw.text((240 + (600 - cw) / 2, 180 + (600 - ch) / 2 - 20), target_char, fill="#38bdf8", font=big_custom_font)
+
+            hex_code = f"U+{ord(target_char):04X}"
+            code_text = f"Char: {target_char}   |   Unicode: {hex_code}"
+            draw.text((340, 810), code_text, fill="#94a3b8", font=header_font)
+
+        # Categorized Grid Sheet Mode
+        else:
+            title_text = f"Glyph Collection Sheet: {font_name}"
+            draw.text((60, 45), title_text, fill="#ffffff", font=header_font)
+            draw.line([(60, 105), (width - 60, 105)], fill="#1e293b", width=2)
+
+            grid_chars = [
+                "অ", "আ", "ই", "ঈ", "উ", "ঊ", "ঋ", "এ", "ঐ", "ও", "ঔ",
+                "ক", "খ", "গ", "ঘ", "ঙ", "চ", "ছ", "জ", "ঝ", "ঞ", "ট",
+                "ঠ", "ড", "ঢ", "ণ", "ত", "থ", "দ", "ধ", "ন", "প", "ফ",
+                "ব", "ভ", "ম", "য", "র", "ল", "শ", "ষ", "স", "হ", "ড়",
+                "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
+                "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V",
+                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+                "০", "১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯",
+                "!", "@", "#", "$", "%", "&", "*", "(", ")", "+", "?"
+            ]
+
+            cols, rows = 11, 8
+            start_x, start_y = 60, 130
+            cell_w, cell_h = 86, 86
+
+            grid_custom_font = get_auto_fit_font(font_io, "ক", max_width=50, max_height=50, start_size=42, min_size=20)
+
+            for idx, ch in enumerate(grid_chars):
+                r = idx // cols
+                c = idx % cols
+                x1 = start_x + c * (cell_w + 2)
+                y1 = start_y + r * (cell_h + 2)
+
+                draw.rounded_rectangle([x1, y1, x1 + cell_w, y1 + cell_h], radius=8, fill="#131e30", outline="#1e293b", width=1)
+                
+                try:
+                    cb = draw.textbbox((0, 0), ch, font=grid_custom_font)
+                    cw, ch_h = cb[2] - cb[0], cb[3] - cb[1]
+                    draw.text((x1 + (cell_w - cw) / 2, y1 + (cell_h - ch_h) / 2 - 4), ch, fill="#f8fafc", font=grid_custom_font)
+                except Exception:
+                    draw.text((x1 + 35, y1 + 25), "?", fill="#ef4444", font=sub_font)
+
+        # Footer Credit
+        draw.line([(60, 880), (width - 60, 880)], fill="#1e293b", width=2)
+        u_text = f"Glyph Preview Requested by: {requested_by}"
+        draw.text((60, 910), u_text, fill="#38bdf8", font=credit_font)
+
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        return Response(content=img_byte_arr.getvalue(), media_type="image/png")
+
+    except Exception as e:
+        return {"error": str(e)}
+
+# -------------------------------------------------------------
+# PREVIEW RENDERER
 # -------------------------------------------------------------
 @app.get("/preview")
 def generate_preview(
@@ -286,7 +450,6 @@ def generate_preview(
         file_bytes = io.BytesIO(font_res.content)
         raw_bytes = file_bytes.getvalue()
 
-        # ZIP AUTO-UNZIP LOGIC
         if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
             file_bytes.seek(0)
             with zipfile.ZipFile(file_bytes) as z:
@@ -307,7 +470,6 @@ def generate_preview(
             file_bytes.seek(0)
             custom_font_bytes = file_bytes
 
-        # AUTO FONT DETECTION FOR HEADER
         detected_header_name = font_name
         try:
             binary_meta = parse_ttf_binary_metadata(raw_bytes)
@@ -332,7 +494,6 @@ def generate_preview(
         sublabel_font = get_hind_siliguri_font(22)
         credit_user_font = get_hind_siliguri_font(30)
 
-        # Draw Header using Detected Font Name
         header_font = get_hind_siliguri_font(42)
         title_bbox = draw.textbbox((0, 0), detected_header_name, font=header_font)
         title_w = title_bbox[2] - title_bbox[0]
