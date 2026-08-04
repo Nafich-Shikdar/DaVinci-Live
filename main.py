@@ -35,8 +35,8 @@ def get_hind_siliguri_font(size):
         return ImageFont.truetype(HIND_SILIGURI_BYTES, size=size)
     return ImageFont.load_default()
 
-def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, min_size=20):
-    for size in range(start_size, min_size - 1, -2):
+def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, min_size=26):
+    for size in range(start_size, min_size - 1, -3):
         try:
             font_bytes.seek(0)
             font = ImageFont.truetype(font_bytes, size=size)
@@ -60,7 +60,7 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci Multilingual & Smart Layout Engine Active"}
+    return {"status": "DaVinci Multilingual & Glyph Engine Active"}
 
 # -------------------------------------------------------------
 # HIGH-PRECISION NATIVE TTF/OTF BINARY METADATA PARSER
@@ -266,7 +266,7 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
         return {"error": str(e)}
 
 # -------------------------------------------------------------
-# GLYPH INSPECTOR & PREVIEW GENERATOR
+# NEW FEATURE: GLYPH INSPECTOR & PREVIEW GENERATOR
 # -------------------------------------------------------------
 @app.get("/glyph_info")
 def get_glyph_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = "", char: str = ""):
@@ -362,12 +362,14 @@ def generate_glyph_preview(
         sub_font = get_hind_siliguri_font(22)
         credit_font = get_hind_siliguri_font(28)
 
+        # Single Char Zoomed Mode
         if char and len(char.strip()) > 0:
             target_char = char.strip()[0]
             title_text = f"Single Glyph View: '{target_char}'"
             draw.text((60, 45), title_text, fill="#ffffff", font=header_font)
             draw.line([(60, 105), (width - 60, 105)], fill="#1e293b", width=2)
 
+            # Central Big Card
             draw.rounded_rectangle([240, 180, 840, 780], radius=24, fill="#131e30", outline="#06b6d4", width=3)
             
             big_custom_font = get_auto_fit_font(font_io, target_char, max_width=500, max_height=500, start_size=320, min_size=60)
@@ -379,6 +381,7 @@ def generate_glyph_preview(
             code_text = f"Char: {target_char}   |   Unicode: {hex_code}"
             draw.text((340, 810), code_text, fill="#94a3b8", font=header_font)
 
+        # Categorized Grid Sheet Mode
         else:
             title_text = f"Glyph Collection Sheet: {font_name}"
             draw.text((60, 45), title_text, fill="#ffffff", font=header_font)
@@ -417,6 +420,7 @@ def generate_glyph_preview(
                 except Exception:
                     draw.text((x1 + 35, y1 + 25), "?", fill="#ef4444", font=sub_font)
 
+        # Footer Credit
         draw.line([(60, 880), (width - 60, 880)], fill="#1e293b", width=2)
         u_text = f"Glyph Preview Requested by: {requested_by}"
         draw.text((60, 910), u_text, fill="#38bdf8", font=credit_font)
@@ -429,64 +433,7 @@ def generate_glyph_preview(
         return {"error": str(e)}
 
 # -------------------------------------------------------------
-# NEW FEATURE: SMART PREVIEW LAYOUT ANALYSIS & ENGINE
-# -------------------------------------------------------------
-def analyze_smart_layout(raw_bytes: bytes, font_name: str, requested_lang: str):
-    name_lower = font_name.lower()
-    
-    # Defaults
-    detected_lang = requested_lang
-    layout_style = "default_2x2"
-
-    try:
-        binary_meta = parse_ttf_binary_metadata(raw_bytes)
-        full_name = (binary_meta.get('full_name') or binary_meta.get('family') or "").lower()
-        combined_name = f"{name_lower} {full_name}"
-
-        # 1. Monospace Check
-        if any(k in combined_name for k in ["mono", "code", "consolas", "courier", "terminal"]):
-            return "monospace"
-
-        # 2. Handwriting / Calligraphy / Script Check
-        if any(k in combined_name for k in ["script", "hand", "handwriting", "brush", "signature", "calligraphy", "cursive"]):
-            return "handwriting"
-
-        # 3. Display / Poster Check
-        if any(k in combined_name for k in ["display", "poster", "banner", "black", "heavy", "impact"]):
-            return "display_poster"
-
-        # 4. Language Analysis from TTFont CMAP if available
-        if TTFont:
-            try:
-                tt = TTFont(io.BytesIO(raw_bytes))
-                cmap = tt.getBestCmap()
-                if cmap:
-                    has_bangla = any(0x0980 <= code <= 0x09FF for code in cmap)
-                    has_arabic = any(0x0600 <= code <= 0x06FF for code in cmap)
-
-                    if has_bangla or requested_lang == 'b':
-                        return "bangla_hero"
-                    elif has_arabic or requested_lang == 'a':
-                        return "arabic_calligraphy"
-                    elif requested_lang == 'e':
-                        return "english_typography"
-            except Exception:
-                pass
-
-        if requested_lang == 'b' or any(k in combined_name for k in ["bangla", "bd", "solaiman", "kalpurush", "lipi"]):
-            return "bangla_hero"
-        elif requested_lang == 'e':
-            return "english_typography"
-        elif requested_lang == 'a':
-            return "arabic_calligraphy"
-
-    except Exception:
-        pass
-
-    return "default_2x2"
-
-# -------------------------------------------------------------
-# PREVIEW RENDERER WITH SMART LAYOUT ROUTING & FALLBACK
+# PREVIEW RENDERER
 # -------------------------------------------------------------
 @app.get("/preview")
 def generate_preview(
@@ -553,117 +500,49 @@ def generate_preview(
         draw.text(((width - title_w) / 2, 55), detected_header_name, fill=text_c, font=header_font)
         draw.line([(80, 135), (width - 80, 135)], fill=border_c, width=2)
 
-        # SMART LAYOUT ANALYSIS (If no custom text is provided)
-        smart_layout = "default_2x2"
-        if not text.strip():
-            smart_layout = analyze_smart_layout(raw_bytes, font_name, lang)
-
-        # ---------------------------------------------------------
-        # SMART LAYOUT 1: BANGLA HERO QUOTE LAYOUT
-        # ---------------------------------------------------------
-        if smart_layout == "bangla_hero":
-            hero_quote = "নান্দনিক টাইপোগ্রাফির মেলবন্ধনে জাগ্রত শিল্পকলা"
-            sub_words = ["সংস্কৃতি", "স্বাধীনতা", "সূক্ষ্মতা", "শ্রদ্ধাঞ্জলি"]
-
-            # Hero Card (Top Big Box)
-            draw.rounded_rectangle([60, 160, 1020, 480], radius=20, fill=card_bg, outline=border_c, width=2)
-            draw.rectangle([90, 472, 990, 476], fill="#06b6d4")
-            
-            hero_font = get_auto_fit_font(custom_font_bytes, hero_quote, max_width=900, max_height=260, start_size=65, min_size=24)
-            hb = draw.textbbox((0, 0), hero_quote, font=hero_font)
-            hw, hh = hb[2] - hb[0], hb[3] - hb[1]
-            draw.text((60 + (960 - hw) / 2, 160 + (320 - hh) / 2 - 10), hero_quote, fill=text_c, font=hero_font)
-
-            # 2 Bottom Sub-cards
-            card_positions = [(60, 510, 510, 820), (570, 510, 1020, 820)]
-            for idx, (x1, y1, x2, y2) in enumerate(card_positions):
-                card_w, card_h = x2 - x1, y2 - y1
-                draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=card_bg, outline=border_c, width=2)
-                draw.rectangle([x1 + 30, y2 - 6, x2 - 30, y2 - 2], fill="#06b6d4")
-
-                word = sub_words[idx]
-                card_font = get_auto_fit_font(custom_font_bytes, word, max_width=card_w - 60, max_height=card_h - 90, start_size=75, min_size=24)
-                w_bbox = draw.textbbox((0, 0), word, font=card_font)
-                w_width, w_height = w_bbox[2] - w_bbox[0], w_bbox[3] - w_bbox[1]
-                draw.text((x1 + (card_w - w_width) / 2, y1 + (card_h - w_height) / 2 - 20), word, fill=text_c, font=card_font)
-
-                sub_bbox = draw.textbbox((0, 0), word, font=sublabel_font)
-                sub_w = sub_bbox[2] - sub_bbox[0]
-                draw.text((x1 + (card_w - sub_w) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
-
-        # ---------------------------------------------------------
-        # SMART LAYOUT 2: MONOSPACE / CODE EDITOR LAYOUT
-        # ---------------------------------------------------------
-        elif smart_layout == "monospace":
-            draw.rounded_rectangle([60, 160, 1020, 820], radius=16, fill="#0f172a", outline="#334155", width=2)
-            draw.ellipse([90, 185, 105, 200], fill="#ef4444")
-            draw.ellipse([115, 185, 130, 200], fill="#f59e0b")
-            draw.ellipse([140, 185, 155, 200], fill="#10b981")
-            draw.line([(60, 220), (1020, 220)], fill="#1e293b", width=2)
-
-            code_lines = [
-                "// DaVinci Monospace Inspection",
-                "function renderFont(name) {",
-                "  const status = 'Active';",
-                "  return `Preview: ${name} [${status}]`;",
-                "}",
-                "console.log(renderFont('CustomFont'));"
-            ]
-
-            code_font = get_auto_fit_font(custom_font_bytes, code_lines[0], max_width=860, max_height=50, start_size=42, min_size=20)
-            curr_y = 250
-            for line in code_lines:
-                draw.text((100, curr_y), line, fill="#38bdf8" if "//" in line or "const" in line else "#f8fafc", font=code_font)
-                curr_y += 85
-
-        # ---------------------------------------------------------
-        # DEFAULT FALLBACK LAYOUT (2x2 GRID PRESERVED)
-        # ---------------------------------------------------------
-        else:
-            if text.strip():
-                words = text.strip().split()
-                if len(words) < 4:
-                    words = (words * 4)[:4]
-                else:
-                    words = words[:4]
+        if text.strip():
+            words = text.strip().split()
+            if len(words) < 4:
+                words = (words * 4)[:4]
             else:
-                if lang == 'b':
-                    words = random.sample(BANGLA_WORDS_POOL, 4)
-                elif lang == 'e':
-                    words = random.sample(ENGLISH_WORDS_POOL, 4)
-                elif lang == 'a':
-                    words = random.sample(ARABIC_WORDS_POOL, 4)
-                else:
-                    words = [random.choice(BANGLA_WORDS_POOL), random.choice(ENGLISH_WORDS_POOL), random.choice(ARABIC_WORDS_POOL), random.choice(GLOBAL_RANDOM_WORDS)]
+                words = words[:4]
+        else:
+            if lang == 'b':
+                words = random.sample(BANGLA_WORDS_POOL, 4)
+            elif lang == 'e':
+                words = random.sample(ENGLISH_WORDS_POOL, 4)
+            elif lang == 'a':
+                words = random.sample(ARABIC_WORDS_POOL, 4)
+            else:
+                words = [random.choice(BANGLA_WORDS_POOL), random.choice(ENGLISH_WORDS_POOL), random.choice(ARABIC_WORDS_POOL), random.choice(GLOBAL_RANDOM_WORDS)]
 
-            card_positions = [
-                (60, 170, 510, 480),
-                (570, 170, 1020, 480),
-                (60, 510, 510, 820),
-                (570, 510, 1020, 820)
-            ]
+        card_positions = [
+            (60, 170, 510, 480),
+            (570, 170, 1020, 480),
+            (60, 510, 510, 820),
+            (570, 510, 1020, 820)
+        ]
 
-            for idx, (x1, y1, x2, y2) in enumerate(card_positions):
-                card_w, card_h = x2 - x1, y2 - y1
+        for idx, (x1, y1, x2, y2) in enumerate(card_positions):
+            card_w, card_h = x2 - x1, y2 - y1
 
-                draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=card_bg, outline=border_c, width=2)
-                draw.rectangle([x1 + 30, y2 - 6, x2 - 30, y2 - 2], fill="#06b6d4")
+            draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=card_bg, outline=border_c, width=2)
+            draw.rectangle([x1 + 30, y2 - 6, x2 - 30, y2 - 2], fill="#06b6d4")
 
-                word = words[idx]
-                card_font = get_auto_fit_font(custom_font_bytes, word, max_width=card_w - 60, max_height=card_h - 90, start_size=80, min_size=26)
+            word = words[idx]
+            card_font = get_auto_fit_font(custom_font_bytes, word, max_width=card_w - 60, max_height=card_h - 90, start_size=80, min_size=26)
 
-                w_bbox = draw.textbbox((0, 0), word, font=card_font)
-                w_width, w_height = w_bbox[2] - w_bbox[0], w_bbox[3] - w_bbox[1]
+            w_bbox = draw.textbbox((0, 0), word, font=card_font)
+            w_width, w_height = w_bbox[2] - w_bbox[0], w_bbox[3] - w_bbox[1]
 
-                word_x = x1 + (card_w - w_width) / 2
-                word_y = y1 + (card_h - w_height) / 2 - 20
-                draw.text((word_x, word_y), word, fill=text_c, font=card_font)
+            word_x = x1 + (card_w - w_width) / 2
+            word_y = y1 + (card_h - w_height) / 2 - 20
+            draw.text((word_x, word_y), word, fill=text_c, font=card_font)
 
-                sub_bbox = draw.textbbox((0, 0), word, font=sublabel_font)
-                sub_w = sub_bbox[2] - sub_bbox[0]
-                draw.text((x1 + (card_w - sub_w) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
+            sub_bbox = draw.textbbox((0, 0), word, font=sublabel_font)
+            sub_w = sub_bbox[2] - sub_bbox[0]
+            draw.text((x1 + (card_w - sub_w) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
 
-        # Footer Credit
         draw.line([(80, 860), (width - 80, 860)], fill=border_c, width=2)
         user_credit_text = f"Preview Generated by: {requested_by}"
         uc_bbox = draw.textbbox((0, 0), user_credit_text, font=credit_user_font)
