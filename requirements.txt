@@ -3,3 +3,5 @@ uvicorn
 pillow
 requests
 fonttools
+pyzipper
+pydantic
