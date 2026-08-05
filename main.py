@@ -88,7 +88,7 @@ def home():
     return {"status": "DaVinci Multilingual & ZIP Manager Engine Active"}
 
 # -------------------------------------------------------------
-# ZIP MANAGER: INSPECT, EXTRACT & CREATE (PASSWORD & FOLDER SUPPORTED)
+# ZIP MANAGER: INSPECT, EXTRACT & CREATE (PASSWORD & CUSTOM NAME SUPPORTED)
 # -------------------------------------------------------------
 class ZipInspectRequest(BaseModel):
     zip_url: str
@@ -151,7 +151,6 @@ def inspect_zip_archive(req: ZipInspectRequest):
 
         if not is_encrypted or password_valid:
             for info in zf.infolist():
-                # Folder tracking
                 parts = info.filename.rstrip('/').split('/')
                 if len(parts) > 1:
                     folder_path = "/".join(parts[:-1])
@@ -209,39 +208,52 @@ def extract_single_file_from_zip(zip_url: str, file_path: str, password: str = "
 def create_zip_archive_endpoint(req: ZipCreateRequest):
     try:
         buf = io.BytesIO()
-        pwd_bytes = req.password.encode('utf-8') if req.password else None
-
-        if req.password and pyzipper:
-            zf = pyzipper.AESZipFile(buf, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES_256)
-            if pwd_bytes: zf.setpassword(pwd_bytes)
-        else:
-            zf = zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED)
+        pwd_bytes = req.password.encode('utf-8') if (req.password and req.password.strip()) else None
 
         total_uncompressed_size = 0
         added_files_count = 0
 
-        for item in req.files:
-            f_url = item.url
-            f_name = item.name or f"file_{added_files_count + 1}"
-            try:
-                f_res = requests.get(f_url, timeout=25)
-                if f_res.status_code == 200:
-                    content = f_res.content
-                    total_uncompressed_size += len(content)
-                    zf.writestr(f_name, content)
-                    added_files_count += 1
-            except Exception:
-                pass
+        if pwd_bytes:
+            if pyzipper is not None:
+                with pyzipper.AESZipFile(buf, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES_256) as zf:
+                    zf.setpassword(pwd_bytes)
+                    for item in req.files:
+                        try:
+                            f_res = requests.get(item.url, timeout=25)
+                            if f_res.status_code == 200:
+                                content = f_res.content
+                                total_uncompressed_size += len(content)
+                                zf.writestr(item.name, content)
+                                added_files_count += 1
+                        except Exception:
+                            pass
+            else:
+                return Response(content=b"Error: pyzipper module not installed on server for password protection", status_code=500)
+        else:
+            with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+                for item in req.files:
+                    try:
+                        f_res = requests.get(item.url, timeout=25)
+                        if f_res.status_code == 200:
+                            content = f_res.content
+                            total_uncompressed_size += len(content)
+                            zf.writestr(item.name, content)
+                            added_files_count += 1
+                    except Exception:
+                        pass
 
-        zf.close()
         buf.seek(0)
         zip_data = buf.getvalue()
+
+        final_zip_name = req.zip_name if req.zip_name else "Archive.zip"
+        if not final_zip_name.lower().endswith(".zip"):
+            final_zip_name += ".zip"
 
         return Response(
             content=zip_data, 
             media_type="application/zip", 
             headers={
-                "Content-Disposition": f"attachment; filename={req.zip_name}",
+                "Content-Disposition": f"attachment; filename={final_zip_name}",
                 "X-Total-Files": str(added_files_count),
                 "X-Uncompressed-Size": str(total_uncompressed_size),
                 "X-Compressed-Size": str(len(zip_data))
