@@ -28,6 +28,7 @@ HIND_SILIGURI_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/hin
 BANGLA_WORDS_POOL = ["শ্রদ্ধাঞ্জলি", "সূক্ষ্মতা", "আকাঙ্ক্ষা", "উচ্ছ্বসিত", "সংস্কৃতি", "স্বাধীনতা", "সন্ধ্যা", "প্রজ্বলিত", "নান্দনিক"]
 ENGLISH_WORDS_POOL = ["Typography", "Aesthetics", "Creative", "Design", "Minimalism", "Elegance", "Branding", "Calligraphy"]
 ARABIC_WORDS_POOL = ["الخط العربي", "جماليات", "إبداع", "تصميم", "أصالة", "فنون", "خطاط", "الخط"]
+GLOBAL_RANDOM_WORDS = ["सुंदरता", "Tipografía", "Типографика", "デザイン", "Élégance", "حُسن", "Kalligraphie"]
 
 # RAM MEMORY CACHE FOR FAST FONT LOADING
 FONT_BYTES_CACHE = {}
@@ -41,7 +42,8 @@ def fetch_font_bytes_cached(font_url: str) -> bytes:
     raw_bytes = res.content
     
     if len(FONT_BYTES_CACHE) >= MAX_CACHE_SIZE:
-        FONT_BYTES_CACHE.pop(next(iter(FONT_BYTES_CACHE)))
+        first_key = next(iter(FONT_BYTES_CACHE))
+        FONT_BYTES_CACHE.pop(first_key)
         
     FONT_BYTES_CACHE[font_url] = raw_bytes
     return raw_bytes
@@ -69,7 +71,8 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
         dummy_img = Image.new('RGB', (1, 1))
         d = ImageDraw.Draw(dummy_img)
         bbox = d.textbbox((0, 0), text, font=font)
-        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
 
         if w <= max_width and h <= max_height:
             return font
@@ -82,39 +85,10 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci Multilingual, ZIP Manager & Smart Glyph Engine Active"}
+    return {"status": "DaVinci Multilingual & ZIP Manager Engine Active"}
 
 # -------------------------------------------------------------
-# SMART GLYPH & LANGUAGE DETECTOR (PREVENTS TOFU / BOXES)
-# -------------------------------------------------------------
-def detect_font_supported_languages(font_bytes: bytes):
-    has_bangla = False
-    has_latin = False
-    has_arabic = False
-
-    if TTFont:
-        try:
-            tt = TTFont(io.BytesIO(font_bytes))
-            cmap = tt.getBestCmap()
-            if cmap:
-                for code in cmap.keys():
-                    if 0x0980 <= code <= 0x09FF:
-                        has_bangla = True
-                    elif (0x0041 <= code <= 0x005A) or (0x0061 <= code <= 0x007A):
-                        has_latin = True
-                    elif 0x0600 <= code <= 0x06FF:
-                        has_arabic = True
-        except Exception:
-            pass
-
-    if not has_bangla and not has_latin and not has_arabic:
-        has_bangla = True
-        has_latin = True
-
-    return has_bangla, has_latin, has_arabic
-
-# -------------------------------------------------------------
-# ZIP MANAGER: INSPECT, EXTRACT & CREATE (PASSWORD & CUSTOM NAME)
+# ZIP MANAGER: INSPECT, EXTRACT & CREATE (PASSWORD & FOLDER SUPPORTED)
 # -------------------------------------------------------------
 class ZipInspectRequest(BaseModel):
     zip_url: str
@@ -177,9 +151,11 @@ def inspect_zip_archive(req: ZipInspectRequest):
 
         if not is_encrypted or password_valid:
             for info in zf.infolist():
+                # Folder tracking
                 parts = info.filename.rstrip('/').split('/')
                 if len(parts) > 1:
-                    folders_set.add("/".join(parts[:-1]))
+                    folder_path = "/".join(parts[:-1])
+                    folders_set.add(folder_path)
 
                 if not info.is_dir() and not info.filename.startswith('__MACOSX') and not info.filename.split('/')[-1].startswith('._'):
                     file_name = info.filename.split('/')[-1]
@@ -233,52 +209,39 @@ def extract_single_file_from_zip(zip_url: str, file_path: str, password: str = "
 def create_zip_archive_endpoint(req: ZipCreateRequest):
     try:
         buf = io.BytesIO()
-        pwd_bytes = req.password.encode('utf-8') if (req.password and req.password.strip()) else None
+        pwd_bytes = req.password.encode('utf-8') if req.password else None
+
+        if req.password and pyzipper:
+            zf = pyzipper.AESZipFile(buf, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES_256)
+            if pwd_bytes: zf.setpassword(pwd_bytes)
+        else:
+            zf = zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED)
 
         total_uncompressed_size = 0
         added_files_count = 0
 
-        if pwd_bytes:
-            if pyzipper is not None:
-                with pyzipper.AESZipFile(buf, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES_256) as zf:
-                    zf.setpassword(pwd_bytes)
-                    for item in req.files:
-                        try:
-                            f_res = requests.get(item.url, timeout=25)
-                            if f_res.status_code == 200:
-                                content = f_res.content
-                                total_uncompressed_size += len(content)
-                                zf.writestr(item.name, content)
-                                added_files_count += 1
-                        except Exception:
-                            pass
-            else:
-                return Response(content=b"Error: pyzipper not available", status_code=500)
-        else:
-            with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-                for item in req.files:
-                    try:
-                        f_res = requests.get(item.url, timeout=25)
-                        if f_res.status_code == 200:
-                            content = f_res.content
-                            total_uncompressed_size += len(content)
-                            zf.writestr(item.name, content)
-                            added_files_count += 1
-                    except Exception:
-                        pass
+        for item in req.files:
+            f_url = item.url
+            f_name = item.name or f"file_{added_files_count + 1}"
+            try:
+                f_res = requests.get(f_url, timeout=25)
+                if f_res.status_code == 200:
+                    content = f_res.content
+                    total_uncompressed_size += len(content)
+                    zf.writestr(f_name, content)
+                    added_files_count += 1
+            except Exception:
+                pass
 
+        zf.close()
         buf.seek(0)
         zip_data = buf.getvalue()
-
-        final_zip_name = req.zip_name if req.zip_name else "Archive.zip"
-        if not final_zip_name.lower().endswith(".zip"):
-            final_zip_name += ".zip"
 
         return Response(
             content=zip_data, 
             media_type="application/zip", 
             headers={
-                "Content-Disposition": f"attachment; filename={final_zip_name}",
+                "Content-Disposition": f"attachment; filename={req.zip_name}",
                 "X-Total-Files": str(added_files_count),
                 "X-Uncompressed-Size": str(total_uncompressed_size),
                 "X-Compressed-Size": str(len(zip_data))
@@ -395,6 +358,7 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
         raw_bytes = fetch_font_bytes_cached(font_url)
         size_bytes = len(raw_bytes)
         file_bytes = io.BytesIO(raw_bytes)
+
         target_font_bytes = raw_bytes
 
         if font_url.lower().endswith(".zip") or font_name.lower().endswith(".zip") or zipfile.is_zipfile(file_bytes):
@@ -415,15 +379,24 @@ def get_font_info(font_url: str, font_name: str = "Font.ttf", inner_font: str = 
                     return {"error": "No .ttf or .otf found in zip"}
 
         info = {
-            "family": "তথ্য পাওয়া যায়নি", "full_name": "তথ্য পাওয়া যায়নি",
-            "postscript_name": "তথ্য পাওয়া যায়নি", "unique_id": "তথ্য পাওয়া যায়নি",
+            "family": "তথ্য পাওয়া যায়নি",
+            "full_name": "তথ্য পাওয়া যায়নি",
+            "postscript_name": "তথ্য পাওয়া যায়নি",
+            "unique_id": "তথ্য পাওয়া যায়নি",
             "format": "TTF (TrueType)" if font_name.lower().endswith(".ttf") else ("OTF (OpenType)" if font_name.lower().endswith(".otf") else "তথ্য পাওয়া যায়নি"),
-            "version": "তথ্য পাওয়া যায়নি", "weight": "তথ্য পাওয়া যায়নি", "style": "তথ্য পাওয়া যায়নি",
-            "unicode_support": "তথ্য পাওয়া যায়নি", "glyph_count": "তথ্য পাওয়া যায়নি",
-            "designer": "তথ্য পাওয়া যায়নি", "manufacturer": "তথ্য পাওয়া যায়নি",
-            "copyright": "তথ্য পাওয়া যায়নি", "license": "তথ্য পাওয়া যায়নি",
+            "version": "তথ্য পাওয়া যায়নি",
+            "weight": "তথ্য পাওয়া যায়নি",
+            "style": "তথ্য পাওয়া যায়নি",
+            "unicode_support": "তথ্য পাওয়া যায়নি",
+            "glyph_count": "তথ্য পাওয়া যায়নি",
+            "designer": "তথ্য পাওয়া যায়নি",
+            "manufacturer": "তথ্য পাওয়া যায়নি",
+            "copyright": "তথ্য পাওয়া যায়নি",
+            "license": "তথ্য পাওয়া যায়নি",
             "file_size": f"{round(size_bytes / 1024, 2)} KB" if size_bytes < 1048576 else f"{round(size_bytes / 1048576, 2)} MB",
-            "embedding_allowed": "তথ্য পাওয়া যায়নি", "created_date": "তথ্য পাওয়া যায়নি", "modified_date": "তথ্য পাওয়া যায়নি"
+            "embedding_allowed": "তথ্য পাওয়া যায়নি",
+            "created_date": "তথ্য পাওয়া যায়নি",
+            "modified_date": "তথ্য পাওয়া যায়নি"
         }
 
         if TTFont:
@@ -505,31 +478,46 @@ def get_glyph_info(font_url: str, font_name: str = "Font.ttf", inner_font: str =
 
         total_glyphs = "তথ্য পাওয়া যায়নি"
         unicode_glyphs = "তথ্য পাওয়া যায়নি"
+        missing_glyphs = 0
+        supported_set = "Bangla, English, Numbers & Symbols"
+        font_encoding = "Unicode (CMAP)"
 
         if TTFont:
             try:
                 tt = TTFont(io.BytesIO(target_font_bytes))
-                if 'maxp' in tt: total_glyphs = str(tt['maxp'].numGlyphs)
+                if 'maxp' in tt:
+                    total_glyphs = str(tt['maxp'].numGlyphs)
                 if 'cmap' in tt:
                     cmap = tt.getBestCmap()
-                    if cmap: unicode_glyphs = str(len(cmap))
-            except Exception: pass
+                    if cmap:
+                        unicode_glyphs = str(len(cmap))
+            except Exception:
+                pass
 
         if total_glyphs == "তথ্য পাওয়া যায়নি":
             meta = parse_ttf_binary_metadata(target_font_bytes)
-            if meta.get('glyph_count'): total_glyphs = meta['glyph_count']
+            if meta.get('glyph_count'):
+                total_glyphs = meta['glyph_count']
 
         return {
-            "font_name": font_name, "total_glyphs": total_glyphs, "unicode_glyphs": unicode_glyphs,
-            "missing_glyphs": 0, "supported_set": "Bangla, English, Numbers & Symbols",
-            "font_encoding": "Unicode (CMAP)", "query_char": char.strip() if char else ""
+            "font_name": font_name,
+            "total_glyphs": total_glyphs,
+            "unicode_glyphs": unicode_glyphs,
+            "missing_glyphs": missing_glyphs,
+            "supported_set": supported_set,
+            "font_encoding": font_encoding,
+            "query_char": char.strip() if char else ""
         }
     except Exception as e:
         return {"error": str(e)}
 
 @app.get("/glyph_preview")
 def generate_glyph_preview(
-    font_url: str, font_name: str = "Font.ttf", inner_font: str = "", char: str = "", requested_by: str = "User"
+    font_url: str,
+    font_name: str = "Font.ttf",
+    inner_font: str = "",
+    char: str = "",
+    requested_by: str = "User"
 ):
     try:
         raw_bytes = fetch_font_bytes_cached(font_url)
@@ -561,44 +549,72 @@ def generate_glyph_preview(
 
         if char and len(char.strip()) > 0:
             target_char = char.strip()[0]
-            draw.text((60, 45), f"Single Glyph View: '{target_char}'", fill="#ffffff", font=header_font)
+            title_text = f"Single Glyph View: '{target_char}'"
+            draw.text((60, 45), title_text, fill="#ffffff", font=header_font)
             draw.line([(60, 105), (width - 60, 105)], fill="#1e293b", width=2)
+
             draw.rounded_rectangle([240, 180, 840, 780], radius=24, fill="#131e30", outline="#06b6d4", width=3)
             
             big_custom_font = get_auto_fit_font(font_io, target_char, max_width=500, max_height=500, start_size=320, min_size=60)
             c_bbox = draw.textbbox((0, 0), target_char, font=big_custom_font)
             cw, ch = c_bbox[2] - c_bbox[0], c_bbox[3] - c_bbox[1]
             draw.text((240 + (600 - cw) / 2, 180 + (600 - ch) / 2 - 20), target_char, fill="#38bdf8", font=big_custom_font)
-            draw.text((340, 810), f"Char: {target_char}   |   Unicode: U+{ord(target_char):04X}", fill="#94a3b8", font=header_font)
+
+            hex_code = f"U+{ord(target_char):04X}"
+            code_text = f"Char: {target_char}   |   Unicode: {hex_code}"
+            draw.text((340, 810), code_text, fill="#94a3b8", font=header_font)
+
         else:
-            draw.text((60, 45), f"Glyph Collection Sheet: {font_name}", fill="#ffffff", font=header_font)
+            title_text = f"Glyph Collection Sheet: {font_name}"
+            draw.text((60, 45), title_text, fill="#ffffff", font=header_font)
             draw.line([(60, 105), (width - 60, 105)], fill="#1e293b", width=2)
 
-            grid_chars = ["অ", "আ", "ই", "ঈ", "উ", "ঊ", "ঋ", "এ", "ঐ", "ও", "ঔ", "ক", "খ", "গ", "ঘ", "ঙ", "চ", "ছ", "জ", "ঝ", "ঞ", "ট", "ঠ", "ড", "ঢ", "ণ", "ত", "থ", "দ", "ধ", "ন", "প", "ফ", "ব", "ভ", "ম", "য", "র", "ল", "শ", "ষ", "স", "হ", "ড়", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
-            cols, start_x, start_y, cell_w, cell_h = 11, 60, 130, 86, 86
+            grid_chars = [
+                "অ", "আ", "ই", "ঈ", "উ", "ঊ", "ঋ", "এ", "ঐ", "ও", "ঔ",
+                "ক", "খ", "গ", "ঘ", "ঙ", "চ", "ছ", "জ", "ঝ", "ঞ", "ট",
+                "ঠ", "ড", "ঢ", "ণ", "ত", "থ", "দ", "ধ", "ন", "প", "ফ",
+                "ব", "ভ", "ম", "য", "র", "ল", "শ", "ষ", "স", "হ", "ড়",
+                "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K",
+                "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V",
+                "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+                "০", "১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯",
+                "!", "@", "#", "$", "%", "&", "*", "(", ")", "+", "?"
+            ]
+
+            cols, rows = 11, 8
+            start_x, start_y = 60, 130
+            cell_w, cell_h = 86, 86
+
             grid_custom_font = get_auto_fit_font(font_io, "ক", max_width=50, max_height=50, start_size=42, min_size=20)
 
             for idx, ch in enumerate(grid_chars):
-                r, c = idx // cols, idx % cols
-                x1, y1 = start_x + c * (cell_w + 2), start_y + r * (cell_h + 2)
+                r = idx // cols
+                c = idx % cols
+                x1 = start_x + c * (cell_w + 2)
+                y1 = start_y + r * (cell_h + 2)
+
                 draw.rounded_rectangle([x1, y1, x1 + cell_w, y1 + cell_h], radius=8, fill="#131e30", outline="#1e293b", width=1)
+                
                 try:
                     cb = draw.textbbox((0, 0), ch, font=grid_custom_font)
-                    draw.text((x1 + (cell_w - (cb[2] - cb[0])) / 2, y1 + (cell_h - (cb[3] - cb[1])) / 2 - 4), ch, fill="#f8fafc", font=grid_custom_font)
+                    cw, ch_h = cb[2] - cb[0], cb[3] - cb[1]
+                    draw.text((x1 + (cell_w - cw) / 2, y1 + (cell_h - ch_h) / 2 - 4), ch, fill="#f8fafc", font=grid_custom_font)
                 except Exception:
-                    pass
+                    draw.text((x1 + 35, y1 + 25), "?", fill="#ef4444", font=sub_font)
 
         draw.line([(60, 880), (width - 60, 880)], fill="#1e293b", width=2)
-        draw.text((60, 910), f"Glyph Preview Requested by: {requested_by}", fill="#38bdf8", font=credit_font)
+        u_text = f"Glyph Preview Requested by: {requested_by}"
+        draw.text((60, 910), u_text, fill="#38bdf8", font=credit_font)
 
         img_byte_arr = io.BytesIO()
         img.save(img_byte_arr, format='PNG')
         return Response(content=img_byte_arr.getvalue(), media_type="image/png")
+
     except Exception as e:
         return {"error": str(e)}
 
 # -------------------------------------------------------------
-# PREVIEW RENDERER (SMART LANGUAGE SELECTION - NO BOXES)
+# PREVIEW RENDERER
 # -------------------------------------------------------------
 @app.get("/preview")
 def generate_preview(
@@ -643,44 +659,53 @@ def generate_preview(
         except Exception:
             pass
 
-        has_bn, has_en, has_ar = detect_font_supported_languages(raw_bytes)
-
         width, height = 1080, 1080
-        canvas_bg, card_bg, border_c, text_c, sub_c = "#0b1320", "#131e30", "#1e293b", "#ffffff", "#64748b"
+        
+        if bg_theme == "light":
+            canvas_bg, card_bg, border_c, text_c, sub_c = "#f8fafc", "#ffffff", "#e2e8f0", "#0f172a", "#64748b"
+        elif bg_theme == "transparent":
+            canvas_bg, card_bg, border_c, text_c, sub_c = (0,0,0,0), "#131e30", "#1e293b", "#ffffff", "#64748b"
+        else:
+            canvas_bg, card_bg, border_c, text_c, sub_c = "#0b1320", "#131e30", "#1e293b", "#ffffff", "#64748b"
 
-        img = Image.new('RGB', (width, height), color=canvas_bg)
+        img = Image.new('RGBA' if bg_theme == "transparent" else 'RGB', (width, height), color=canvas_bg)
         draw = ImageDraw.Draw(img)
 
         sublabel_font = get_hind_siliguri_font(22)
         credit_user_font = get_hind_siliguri_font(30)
-        header_font = get_hind_siliguri_font(42)
 
+        header_font = get_hind_siliguri_font(42)
         title_bbox = draw.textbbox((0, 0), detected_header_name, font=header_font)
-        draw.text(((width - (title_bbox[2] - title_bbox[0])) / 2, 55), detected_header_name, fill=text_c, font=header_font)
+        title_w = title_bbox[2] - title_bbox[0]
+        draw.text(((width - title_w) / 2, 55), detected_header_name, fill=text_c, font=header_font)
         draw.line([(80, 135), (width - 80, 135)], fill=border_c, width=2)
 
         if text.strip():
             words = text.strip().split()
-            words = (words * 4)[:4] if len(words) < 4 else words[:4]
+            if len(words) < 4:
+                words = (words * 4)[:4]
+            else:
+                words = words[:4]
         else:
-            if lang == 'b' or (has_bn and not has_en and not has_ar):
+            if lang == 'b':
                 words = random.sample(BANGLA_WORDS_POOL, 4)
-            elif lang == 'e' or (has_en and not has_bn and not has_ar):
+            elif lang == 'e':
                 words = random.sample(ENGLISH_WORDS_POOL, 4)
-            elif lang == 'a' or (has_ar and not has_bn and not has_en):
+            elif lang == 'a':
                 words = random.sample(ARABIC_WORDS_POOL, 4)
             else:
-                words = []
-                if has_bn: words.append(random.choice(BANGLA_WORDS_POOL))
-                if has_en: words.append(random.choice(ENGLISH_WORDS_POOL))
-                if has_ar: words.append(random.choice(ARABIC_WORDS_POOL))
-                while len(words) < 4:
-                    words.append(random.choice(BANGLA_WORDS_POOL if has_bn else ENGLISH_WORDS_POOL))
+                words = [random.choice(BANGLA_WORDS_POOL), random.choice(ENGLISH_WORDS_POOL), random.choice(ARABIC_WORDS_POOL), random.choice(GLOBAL_RANDOM_WORDS)]
 
-        card_positions = [(60, 170, 510, 480), (570, 170, 1020, 480), (60, 510, 510, 820), (570, 510, 1020, 820)]
+        card_positions = [
+            (60, 170, 510, 480),
+            (570, 170, 1020, 480),
+            (60, 510, 510, 820),
+            (570, 510, 1020, 820)
+        ]
 
         for idx, (x1, y1, x2, y2) in enumerate(card_positions):
             card_w, card_h = x2 - x1, y2 - y1
+
             draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=card_bg, outline=border_c, width=2)
             draw.rectangle([x1 + 30, y2 - 6, x2 - 30, y2 - 2], fill="#06b6d4")
 
@@ -688,18 +713,25 @@ def generate_preview(
             card_font = get_auto_fit_font(custom_font_bytes, word, max_width=card_w - 60, max_height=card_h - 90, start_size=80, min_size=26)
 
             w_bbox = draw.textbbox((0, 0), word, font=card_font)
-            draw.text((x1 + (card_w - (w_bbox[2] - w_bbox[0])) / 2, y1 + (card_h - (w_bbox[3] - w_bbox[1])) / 2 - 20), word, fill=text_c, font=card_font)
+            w_width, w_height = w_bbox[2] - w_bbox[0], w_bbox[3] - w_bbox[1]
+
+            word_x = x1 + (card_w - w_width) / 2
+            word_y = y1 + (card_h - w_height) / 2 - 20
+            draw.text((word_x, word_y), word, fill=text_c, font=card_font)
 
             sub_bbox = draw.textbbox((0, 0), word, font=sublabel_font)
-            draw.text((x1 + (card_w - (sub_bbox[2] - sub_bbox[0])) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
+            sub_w = sub_bbox[2] - sub_bbox[0]
+            draw.text((x1 + (card_w - sub_w) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
 
         draw.line([(80, 860), (width - 80, 860)], fill=border_c, width=2)
         user_credit_text = f"Preview Generated by: {requested_by}"
         uc_bbox = draw.textbbox((0, 0), user_credit_text, font=credit_user_font)
-        draw.text(((width - (uc_bbox[2] - uc_bbox[0])) / 2, 910), user_credit_text, fill="#38bdf8", font=credit_user_font)
+        uc_w = uc_bbox[2] - uc_bbox[0]
+        draw.text(((width - uc_w) / 2, 910), user_credit_text, fill="#38bdf8", font=credit_user_font)
 
         img_byte_arr = io.BytesIO()
         img.save(img_byte_arr, format='PNG')
         return Response(content=img_byte_arr.getvalue(), media_type="image/png")
+
     except Exception as e:
         return {"error": str(e)}
