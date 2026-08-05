@@ -28,7 +28,7 @@ HIND_SILIGURI_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/hin
 BANGLA_WORDS_POOL = ["শ্রদ্ধাঞ্জলি", "সূক্ষ্মতা", "আকাঙ্ক্ষা", "উচ্ছ্বসিত", "সংস্কৃতি", "স্বাধীনতা", "সন্ধ্যা", "প্রজ্বলিত", "নান্দনিক"]
 ENGLISH_WORDS_POOL = ["Typography", "Aesthetics", "Creative", "Design", "Minimalism", "Elegance", "Branding", "Calligraphy"]
 ARABIC_WORDS_POOL = ["الخط العربي", "جماليات", "إبداع", "تصميم", "أصالة", "فنون", "خطاط", "الخط"]
-GLOBAL_RANDOM_WORDS = ["सुंदरता", "Tipografía", "Типографиका", "デザイン", "Élégance", "حُسن", "Kalligraphie"]
+GLOBAL_RANDOM_WORDS = ["सुंदरता", "Tipografía", "Типографика", "デザイン", "Élégance", "حُسن", "Kalligraphie"]
 
 # RAM MEMORY CACHE FOR FAST FONT LOADING
 FONT_BYTES_CACHE = {}
@@ -88,7 +88,7 @@ def home():
     return {"status": "DaVinci Multilingual & ZIP Manager Engine Active"}
 
 # -------------------------------------------------------------
-# ZIP MANAGER: INSPECT, EXTRACT & CREATE (PASSWORD SUPPORTED)
+# ZIP MANAGER: INSPECT, EXTRACT & CREATE (PASSWORD & FOLDER SUPPORTED)
 # -------------------------------------------------------------
 class ZipInspectRequest(BaseModel):
     zip_url: str
@@ -135,6 +135,7 @@ def inspect_zip_archive(req: ZipInspectRequest):
 
         password_valid = not is_encrypted
         files_info = []
+        folders_set = set()
         total_size = 0
 
         if is_encrypted and req.password:
@@ -150,6 +151,12 @@ def inspect_zip_archive(req: ZipInspectRequest):
 
         if not is_encrypted or password_valid:
             for info in zf.infolist():
+                # Folder tracking
+                parts = info.filename.rstrip('/').split('/')
+                if len(parts) > 1:
+                    folder_path = "/".join(parts[:-1])
+                    folders_set.add(folder_path)
+
                 if not info.is_dir() and not info.filename.startswith('__MACOSX') and not info.filename.split('/')[-1].startswith('._'):
                     file_name = info.filename.split('/')[-1]
                     files_info.append({
@@ -164,6 +171,7 @@ def inspect_zip_archive(req: ZipInspectRequest):
             "is_encrypted": is_encrypted,
             "password_valid": password_valid,
             "file_count": len(files_info),
+            "folder_count": len(folders_set),
             "total_size": total_size,
             "files": files_info,
             "error": None
