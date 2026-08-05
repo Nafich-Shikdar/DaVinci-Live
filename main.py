@@ -1,11 +1,18 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from PIL import Image, ImageDraw, ImageFont
+from pydantic import BaseModel
+from typing import List, Optional
 import requests
 import io
 import random
 import zipfile
 import datetime
 import struct
+
+try:
+    import pyzipper
+except ImportError:
+    pyzipper = None
 
 try:
     from fontTools.ttLib import TTFont
@@ -21,7 +28,7 @@ HIND_SILIGURI_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/hin
 BANGLA_WORDS_POOL = ["শ্রদ্ধাঞ্জলি", "সূক্ষ্মতা", "আকাঙ্ক্ষা", "উচ্ছ্বসিত", "সংস্কৃতি", "স্বাধীনতা", "সন্ধ্যা", "প্রজ্বলিত", "নান্দনিক"]
 ENGLISH_WORDS_POOL = ["Typography", "Aesthetics", "Creative", "Design", "Minimalism", "Elegance", "Branding", "Calligraphy"]
 ARABIC_WORDS_POOL = ["الخط العربي", "جماليات", "إبداع", "تصميم", "أصالة", "فنون", "خطاط", "الخط"]
-GLOBAL_RANDOM_WORDS = ["सुंदरता", "Tipografía", "Типографика", "デザイン", "Élégance", "حُسن", "Kalligraphie"]
+GLOBAL_RANDOM_WORDS = ["सुंदरता", "Tipografía", "Типографиका", "デザイン", "Élégance", "حُسن", "Kalligraphie"]
 
 # RAM MEMORY CACHE FOR FAST FONT LOADING
 FONT_BYTES_CACHE = {}
@@ -31,7 +38,7 @@ def fetch_font_bytes_cached(font_url: str) -> bytes:
     if font_url in FONT_BYTES_CACHE:
         return FONT_BYTES_CACHE[font_url]
     
-    res = requests.get(font_url, timeout=15)
+    res = requests.get(font_url, timeout=20)
     raw_bytes = res.content
     
     if len(FONT_BYTES_CACHE) >= MAX_CACHE_SIZE:
@@ -78,7 +85,162 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci High-Speed Multilingual Engine Active"}
+    return {"status": "DaVinci Multilingual & ZIP Manager Engine Active"}
+
+# -------------------------------------------------------------
+# ZIP MANAGER: INSPECT, EXTRACT & CREATE (PASSWORD SUPPORTED)
+# -------------------------------------------------------------
+class ZipInspectRequest(BaseModel):
+    zip_url: str
+    password: Optional[str] = None
+
+class ZipFileItem(BaseModel):
+    url: str
+    name: str
+
+class ZipCreateRequest(BaseModel):
+    files: List[ZipFileItem]
+    password: Optional[str] = None
+    zip_name: Optional[str] = "Archive.zip"
+
+def check_zip_is_encrypted(zip_bytes: bytes) -> bool:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        for zinfo in zf.infolist():
+            if zinfo.flag_bits & 0x1:
+                return True
+    except Exception:
+        pass
+    return False
+
+@app.post("/zip_inspect")
+def inspect_zip_archive(req: ZipInspectRequest):
+    try:
+        raw_bytes = fetch_font_bytes_cached(req.zip_url)
+        is_encrypted = check_zip_is_encrypted(raw_bytes)
+        
+        pwd_bytes = req.password.encode('utf-8') if req.password else None
+        
+        zf = None
+        if pyzipper and is_encrypted:
+            try:
+                zf = pyzipper.AESZipFile(io.BytesIO(raw_bytes))
+                if pwd_bytes: zf.setpassword(pwd_bytes)
+            except Exception:
+                zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
+                if pwd_bytes: zf.setpassword(pwd_bytes)
+        else:
+            zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
+            if pwd_bytes: zf.setpassword(pwd_bytes)
+
+        password_valid = not is_encrypted
+        files_info = []
+        total_size = 0
+
+        if is_encrypted and req.password:
+            try:
+                for info in zf.infolist():
+                    if not info.is_dir():
+                        with zf.open(info, 'r') as f:
+                            f.read(16)
+                        password_valid = True
+                        break
+            except Exception:
+                password_valid = False
+
+        if not is_encrypted or password_valid:
+            for info in zf.infolist():
+                if not info.is_dir() and not info.filename.startswith('__MACOSX') and not info.filename.split('/')[-1].startswith('._'):
+                    file_name = info.filename.split('/')[-1]
+                    files_info.append({
+                        "name": file_name if file_name else info.filename,
+                        "path": info.filename,
+                        "size": info.file_size
+                    })
+                    total_size += info.file_size
+
+        return {
+            "success": True,
+            "is_encrypted": is_encrypted,
+            "password_valid": password_valid,
+            "file_count": len(files_info),
+            "total_size": total_size,
+            "files": files_info,
+            "error": None
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/zip_extract_file")
+def extract_single_file_from_zip(zip_url: str, file_path: str, password: str = ""):
+    try:
+        raw_bytes = fetch_font_bytes_cached(zip_url)
+        pwd_bytes = password.encode('utf-8') if password else None
+        data = None
+
+        if pyzipper:
+            try:
+                zf = pyzipper.AESZipFile(io.BytesIO(raw_bytes))
+                if pwd_bytes: zf.setpassword(pwd_bytes)
+                data = zf.read(file_path)
+            except Exception:
+                zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
+                if pwd_bytes: zf.setpassword(pwd_bytes)
+                data = zf.read(file_path)
+        else:
+            zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
+            if pwd_bytes: zf.setpassword(pwd_bytes)
+            data = zf.read(file_path)
+
+        filename = file_path.split('/')[-1] or "extracted_file"
+        return Response(content=data, media_type="application/octet-stream", headers={"Content-Disposition": f"attachment; filename={filename}"})
+    except Exception as e:
+        return Response(content=f"Error: {str(e)}".encode('utf-8'), status_code=500)
+
+@app.post("/zip_create")
+def create_zip_archive_endpoint(req: ZipCreateRequest):
+    try:
+        buf = io.BytesIO()
+        pwd_bytes = req.password.encode('utf-8') if req.password else None
+
+        if req.password and pyzipper:
+            zf = pyzipper.AESZipFile(buf, 'w', compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES_256)
+            if pwd_bytes: zf.setpassword(pwd_bytes)
+        else:
+            zf = zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED)
+
+        total_uncompressed_size = 0
+        added_files_count = 0
+
+        for item in req.files:
+            f_url = item.url
+            f_name = item.name or f"file_{added_files_count + 1}"
+            try:
+                f_res = requests.get(f_url, timeout=25)
+                if f_res.status_code == 200:
+                    content = f_res.content
+                    total_uncompressed_size += len(content)
+                    zf.writestr(f_name, content)
+                    added_files_count += 1
+            except Exception:
+                pass
+
+        zf.close()
+        buf.seek(0)
+        zip_data = buf.getvalue()
+
+        return Response(
+            content=zip_data, 
+            media_type="application/zip", 
+            headers={
+                "Content-Disposition": f"attachment; filename={req.zip_name}",
+                "X-Total-Files": str(added_files_count),
+                "X-Uncompressed-Size": str(total_uncompressed_size),
+                "X-Compressed-Size": str(len(zip_data))
+            }
+        )
+    except Exception as e:
+        return Response(content=f"Error creating zip: {str(e)}".encode('utf-8'), status_code=500)
 
 # -------------------------------------------------------------
 # HIGH-PRECISION NATIVE TTF/OTF BINARY METADATA PARSER
