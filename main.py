@@ -24,11 +24,10 @@ app = FastAPI()
 # Primary Google Font (Hind Siliguri) for UI Headers/Labels
 HIND_SILIGURI_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/hindsiliguri/HindSiliguri-Medium.ttf"
 
-# MULTI-LANGUAGE WORD POOLS
+# নির্দিষ্ট ৩টি ভাষার শব্দভাণ্ডার
 BANGLA_WORDS_POOL = ["শ্রদ্ধাঞ্জলি", "সূক্ষ্মতা", "আকাঙ্ক্ষা", "উচ্ছ্বসিত", "সংস্কৃতি", "স্বাধীনতা", "সন্ধ্যা", "প্রজ্বলিত", "নান্দনিক"]
 ENGLISH_WORDS_POOL = ["Typography", "Aesthetics", "Creative", "Design", "Minimalism", "Elegance", "Branding", "Calligraphy"]
 ARABIC_WORDS_POOL = ["الخط العربي", "جماليات", "إبداع", "تصميم", "أصالة", "فنون", "خطاط", "الخط"]
-GLOBAL_RANDOM_WORDS = ["सुंदरता", "Tipografía", "Типографика", "デザイン", "Élégance", "حُسن", "Kalligraphie"]
 
 # RAM MEMORY CACHE FOR FAST FONT LOADING
 FONT_BYTES_CACHE = {}
@@ -85,7 +84,7 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
 
 @app.get("/")
 def home():
-    return {"status": "DaVinci Multilingual & ZIP Manager Engine Active"}
+    return {"status": "DaVinci 3-Language Preview Engine Active"}
 
 # -------------------------------------------------------------
 # ZIP MANAGER: INSPECT, EXTRACT & CREATE (PASSWORD & CUSTOM NAME SUPPORTED)
@@ -626,14 +625,12 @@ def generate_glyph_preview(
         return {"error": str(e)}
 
 # -------------------------------------------------------------
-# PREVIEW RENDERER
+# 🔥 NEW PREVIEW RENDERER – 3 নির্দিষ্ট ভাষা (বাংলা, ইংরেজি, আরবি)
 # -------------------------------------------------------------
 @app.get("/preview")
 def generate_preview(
     font_url: str,
     font_name: str = "Davinci_Font.ttf",
-    text: str = "",
-    lang: str = "all",
     requested_by: str = "User",
     bg_theme: str = "dark",
     inner_font: str = ""
@@ -662,6 +659,7 @@ def generate_preview(
             file_bytes.seek(0)
             custom_font_bytes = file_bytes
 
+        # ফন্টের আসল নাম বের করা
         detected_header_name = font_name
         try:
             binary_meta = parse_ttf_binary_metadata(raw_bytes)
@@ -672,7 +670,8 @@ def generate_preview(
             pass
 
         width, height = 1080, 1080
-        
+
+        # থিম সেট
         if bg_theme == "light":
             canvas_bg, card_bg, border_c, text_c, sub_c = "#f8fafc", "#ffffff", "#e2e8f0", "#0f172a", "#64748b"
         elif bg_theme == "transparent":
@@ -686,37 +685,30 @@ def generate_preview(
         sublabel_font = get_hind_siliguri_font(22)
         credit_user_font = get_hind_siliguri_font(30)
 
+        # হেডার
         header_font = get_hind_siliguri_font(42)
         title_bbox = draw.textbbox((0, 0), detected_header_name, font=header_font)
         title_w = title_bbox[2] - title_bbox[0]
         draw.text(((width - title_w) / 2, 55), detected_header_name, fill=text_c, font=header_font)
         draw.line([(80, 135), (width - 80, 135)], fill=border_c, width=2)
 
-        if text.strip():
-            words = text.strip().split()
-            if len(words) < 4:
-                words = (words * 4)[:4]
-            else:
-                words = words[:4]
-        else:
-            if lang == 'b':
-                words = random.sample(BANGLA_WORDS_POOL, 4)
-            elif lang == 'e':
-                words = random.sample(ENGLISH_WORDS_POOL, 4)
-            elif lang == 'a':
-                words = random.sample(ARABIC_WORDS_POOL, 4)
-            else:
-                words = [random.choice(BANGLA_WORDS_POOL), random.choice(ENGLISH_WORDS_POOL), random.choice(ARABIC_WORDS_POOL), random.choice(GLOBAL_RANDOM_WORDS)]
-
-        card_positions = [
-            (60, 170, 510, 480),
-            (570, 170, 1020, 480),
-            (60, 510, 510, 820),
-            (570, 510, 1020, 820)
+        # ৩টি ভাষার শব্দ নির্বাচন
+        words = [
+            random.choice(BANGLA_WORDS_POOL),
+            random.choice(ENGLISH_WORDS_POOL),
+            random.choice(ARABIC_WORDS_POOL)
         ]
 
-        for idx, (x1, y1, x2, y2) in enumerate(card_positions):
-            card_w, card_h = x2 - x1, y2 - y1
+        # নতুন কার্ড লেআউট
+        card1 = (60, 170, 1020, 480)    # বাংলা – উপরে পূর্ণ প্রস্থ
+        card2 = (60, 510, 540, 820)     # ইংরেজি – নিচে বামে
+        card3 = (540, 510, 1020, 820)   # আরবি – নিচে ডানে
+
+        cards = [card1, card2, card3]
+
+        for idx, (x1, y1, x2, y2) in enumerate(cards):
+            card_w = x2 - x1
+            card_h = y2 - y1
 
             draw.rounded_rectangle([x1, y1, x2, y2], radius=16, fill=card_bg, outline=border_c, width=2)
             draw.rectangle([x1 + 30, y2 - 6, x2 - 30, y2 - 2], fill="#06b6d4")
@@ -731,10 +723,12 @@ def generate_preview(
             word_y = y1 + (card_h - w_height) / 2 - 20
             draw.text((word_x, word_y), word, fill=text_c, font=card_font)
 
+            # নিচে শব্দের নাম ছোট করে
             sub_bbox = draw.textbbox((0, 0), word, font=sublabel_font)
             sub_w = sub_bbox[2] - sub_bbox[0]
             draw.text((x1 + (card_w - sub_w) / 2, y2 - 45), word, fill=sub_c, font=sublabel_font)
 
+        # ফুটার
         draw.line([(80, 860), (width - 80, 860)], fill=border_c, width=2)
         user_credit_text = f"Preview Generated by: {requested_by}"
         uc_bbox = draw.textbbox((0, 0), user_credit_text, font=credit_user_font)
@@ -747,57 +741,6 @@ def generate_preview(
 
     except Exception as e:
         return {"error": str(e)}
-
-# -------------------------------------------------------------
-# NEW: AUTO LANGUAGE DETECTION ENDPOINT (Feature 2)
-# -------------------------------------------------------------
-def detect_font_script(font_bytes: bytes) -> str:
-    """ফন্ট বাইট থেকে স্ক্রিপ্ট শনাক্ত করে: 'b' (বাংলা), 'e' (ইংরেজি), 'a' (আরবি), 'all' (মিশ্র)"""
-    try:
-        font = TTFont(io.BytesIO(font_bytes))
-        cmap = font.getBestCmap()
-        if not cmap:
-            return "all"
-
-        has_bengali = any(0x0980 <= cp <= 0x09FF for cp in cmap.keys())
-        has_arabic  = any(0x0600 <= cp <= 0x06FF for cp in cmap.keys())
-        has_latin   = any(0x0041 <= cp <= 0x007A for cp in cmap.keys())
-
-        if has_bengali and not has_arabic and not has_latin:
-            return "b"
-        if has_arabic and not has_bengali and not has_latin:
-            return "a"
-        if has_latin and not has_bengali and not has_arabic:
-            return "e"
-        return "all"
-    except Exception:
-        return "all"
-
-@app.get("/detect_language")
-def detect_language(font_url: str, font_name: str = "font.ttf", inner_font: str = ""):
-    try:
-        raw_bytes = fetch_font_bytes_cached(font_url)
-        target_bytes = raw_bytes
-
-        # ZIP ফাইল হলে ভেতরের ফন্ট বের করা
-        if font_name.lower().endswith(".zip") or zipfile.is_zipfile(io.BytesIO(raw_bytes)):
-            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
-                fonts = [f for f in zf.namelist() if f.lower().endswith(('.ttf', '.otf'))]
-                if not fonts:
-                    return {"language": "all", "error": "No font in zip"}
-                target_file = fonts[0]
-                if inner_font:
-                    target_file = next((f for f in fonts if f.endswith(inner_font)), fonts[0])
-                target_bytes = zf.read(target_file)
-
-        lang = detect_font_script(target_bytes)
-        return {"language": lang}
-    except Exception as e:
-        return {"language": "all", "error": str(e)}
-
-# -------------------------------------------------------------
-# (Optional) You can add other endpoints here in future
-# -------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
