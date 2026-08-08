@@ -273,16 +273,23 @@ def download_video(url: str):
         "socket_timeout": 30,
         "retries": 3,
         # 🔧 YouTube-এর "Sign in to confirm you're not a bot" বট-চেক এড়াতে
-        # android/ios ক্লায়েন্ট দিয়ে এক্সট্র্যাক্ট করা হয় (কুকি ছাড়াই কাজ করে বেশিরভাগ সময়)
+        # একাধিক ক্লায়েন্ট ক্রমান্বয়ে ট্রাই করা হয় (tv/android সাধারণত কম কড়াকড়ির শিকার হয়)
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "web"],
+                "player_client": ["tv", "android", "ios", "web"],
             }
         },
         "http_headers": {
             "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"
         },
     }
+
+    # 🌐 ঐচ্ছিক: রেসিডেনশিয়াল প্রক্সি দেওয়া থাকলে ব্যবহার করবে (env var: YTDLP_PROXY)
+    # Render-এর ডেটাসেন্টার IP প্রায়ই YouTube ব্লক করে; কুকিজ + আপডেটেড yt-dlp দিয়েও
+    # কাজ না করলে এটাই সবচেয়ে নির্ভরযোগ্য (কিন্তু পেইড) সমাধান।
+    proxy_url = os.environ.get("YTDLP_PROXY", "").strip()
+    if proxy_url:
+        ydl_opts["proxy"] = proxy_url
 
     # 🍪 ঐচ্ছিক: কুকিজ ফাইল দেওয়া থাকলে ব্যবহার করবে (env var দিয়ে সেট করুন YTDLP_COOKIES_FILE)
     # এটা বট-চেক এড়াতে সবচেয়ে নির্ভরযোগ্য উপায়, বিশেষ করে বয়স-সীমাবদ্ধ/প্রাইভেট ভিডিওর জন্য।
@@ -336,7 +343,11 @@ def download_video(url: str):
 
     except yt_dlp.utils.DownloadError as e:
         cleanup_file(tmp_dir)
-        return {"error": f"লিংক থেকে ভিডিও পাওয়া যায়নি বা সাপোর্টেড নয়: {str(e)}"}
+        version_info = getattr(yt_dlp.version, "__version__", "unknown")
+        return {
+            "error": f"লিংক থেকে ভিডিও পাওয়া যায়নি বা সাপোর্টেড নয়: {str(e)}",
+            "yt_dlp_version": version_info,
+        }
     except Exception as e:
         cleanup_file(tmp_dir)
         return {"error": str(e)}
