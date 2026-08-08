@@ -6,3 +6,4 @@ fonttools
 pyzipper
 pydantic
 fonttools>=4.0
+yt-dlp
