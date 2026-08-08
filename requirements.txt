@@ -6,4 +6,5 @@ fonttools
 pyzipper
 pydantic
 fonttools>=4.0
-yt-dlp
+yt-dlp[default]>=2026.2.4
+yt-dlp-invidious
