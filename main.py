@@ -272,7 +272,23 @@ def download_video(url: str):
         "max_filesize": MAX_TELEGRAM_SIZE,
         "socket_timeout": 30,
         "retries": 3,
+        # 🔧 YouTube-এর "Sign in to confirm you're not a bot" বট-চেক এড়াতে
+        # android/ios ক্লায়েন্ট দিয়ে এক্সট্র্যাক্ট করা হয় (কুকি ছাড়াই কাজ করে বেশিরভাগ সময়)
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "web"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"
+        },
     }
+
+    # 🍪 ঐচ্ছিক: কুকিজ ফাইল দেওয়া থাকলে ব্যবহার করবে (env var দিয়ে সেট করুন YTDLP_COOKIES_FILE)
+    # এটা বট-চেক ১০০% এড়াতে সবচেয়ে নির্ভরযোগ্য উপায়, বিশেষ করে বয়স-সীমাবদ্ধ/প্রাইভেট ভিডিওর জন্য।
+    cookies_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_path and os.path.exists(cookies_path):
+        ydl_opts["cookiefile"] = cookies_path
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
