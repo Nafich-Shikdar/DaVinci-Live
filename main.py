@@ -13,6 +13,8 @@ import struct
 import os
 import tempfile
 import uuid
+import re
+import subprocess
 
 try:
     import pyzipper
@@ -45,6 +47,19 @@ MAX_CACHE_SIZE = 30
 
 # ভিডিও ডাউনলোড সংক্রান্ত কনফিগারেশন
 MAX_TELEGRAM_SIZE = 49 * 1024 * 1024  # টেলিগ্রাম বট আপলোড লিমিট (~50MB)
+
+# 🎬 YouTube বট-চেকে আটকালে ফলব্যাক হিসেবে ব্যবহৃত পাবলিক Piped API ইনস্ট্যান্স
+# (Piped একটা ওপেন-সোর্স প্রাইভেসি-ফ্রেন্ডলি YouTube ফ্রন্টএন্ড — YouTube-এর সার্ভারে
+# সরাসরি রিকোয়েস্ট না গিয়ে এই ইনস্ট্যান্সগুলো দিয়ে স্ট্রিম URL পাওয়া যায়)
+PIPED_API_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi-libre.kavin.rocks",
+    "https://piped-api.privacy.com.de",
+    "https://pipedapi.adminforge.de",
+    "https://api.piped.yt",
+    "https://pipedapi.drgns.space",
+    "https://pipedapi.owo.si",
+]
 
 
 def fetch_font_bytes_cached(font_url: str) -> bytes:
@@ -250,6 +265,85 @@ def cleanup_file(path: str):
         pass
 
 
+def extract_youtube_id(url: str):
+    """YouTube URL (watch, youtu.be, shorts, embed, mobile) থেকে ১১-ক্যারেক্টার ভিডিও আইডি বের করে"""
+    patterns = [
+        r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/|youtube\.com/embed/|m\.youtube\.com/watch\?v=)([A-Za-z0-9_-]{11})",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+def fetch_piped_stream(video_id: str):
+    """
+    একাধিক পাবলিক Piped ইনস্ট্যান্স ক্রমান্বয়ে ট্রাই করে স্ট্রিম তথ্য আনে।
+    প্রথমে প্রোগ্রেসিভ (audio+video একসাথে থাকা) mp4 স্ট্রিম খোঁজে — এতে ffmpeg লাগে না।
+    না পেলে HLS মাস্টার প্লেলিস্ট রিটার্ন করে (ffmpeg দিয়ে মার্জ করতে হবে)।
+    """
+    for base in PIPED_API_INSTANCES:
+        try:
+            res = requests.get(f"{base}/streams/{video_id}", timeout=12)
+            if res.status_code != 200:
+                continue
+            data = res.json()
+            title = data.get("title") or "video"
+
+            video_streams = data.get("videoStreams", []) or []
+            progressive = [
+                s for s in video_streams
+                if not s.get("videoOnly", True) and s.get("url")
+            ]
+            progressive.sort(key=lambda s: (s.get("height") or 0), reverse=True)
+            for s in progressive:
+                h = s.get("height") or 0
+                if h and h <= 720:
+                    return {"type": "progressive", "url": s["url"], "title": title}
+            if progressive:
+                # কোনোটাই ৭২০p বা তার নিচে না থাকলে সবচেয়ে ছোট রেজোলিউশনেরটা নেয়
+                return {"type": "progressive", "url": progressive[-1]["url"], "title": title}
+
+            hls_url = data.get("hls")
+            if hls_url:
+                return {"type": "hls", "url": hls_url, "title": title}
+        except Exception:
+            continue
+    return None
+
+
+def download_progressive_stream(url: str, out_path: str, max_bytes: int) -> bool:
+    """সরাসরি প্রোগ্রেসিভ mp4 স্ট্রিম ডাউনলোড করে, সাইজ লিমিট ছাড়ালে থামিয়ে দেয়"""
+    try:
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            total = 0
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        return False
+                    f.write(chunk)
+        return True
+    except Exception:
+        return False
+
+
+def download_hls_stream(hls_url: str, out_path: str) -> bool:
+    """ffmpeg দিয়ে HLS (m3u8) স্ট্রিম একটা mp4 ফাইলে মার্জ করে (audio+video)"""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", hls_url, "-c", "copy", "-bsf:a", "aac_adtstoasc", out_path],
+            capture_output=True, timeout=180
+        )
+        return result.returncode == 0 and os.path.exists(out_path)
+    except Exception:
+        return False
+
+
 @app.get("/debug")
 def debug_info():
     """
@@ -388,6 +482,33 @@ def download_video(url: str):
         )
 
     except yt_dlp.utils.DownloadError as e:
+        err_str = str(e)
+        is_bot_check = "sign in" in err_str.lower() or "not a bot" in err_str.lower()
+
+        # 🔁 বট-চেকে আটকালে Piped ফলব্যাক ট্রাই করা হয় (YouTube সার্ভারকে বাইপাস করে)
+        if is_bot_check:
+            video_id = extract_youtube_id(url)
+            if video_id:
+                stream_info = fetch_piped_stream(video_id)
+                if stream_info:
+                    fallback_path = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.mp4")
+                    success = False
+                    if stream_info["type"] == "progressive":
+                        success = download_progressive_stream(stream_info["url"], fallback_path, MAX_TELEGRAM_SIZE)
+                    else:
+                        success = download_hls_stream(stream_info["url"], fallback_path)
+
+                    if success and os.path.exists(fallback_path) and 0 < os.path.getsize(fallback_path) <= MAX_TELEGRAM_SIZE:
+                        raw_title = stream_info["title"]
+                        safe_title = "".join(c for c in raw_title if c.isalnum() or c in " _-").strip()[:60] or "video"
+                        return FileResponse(
+                            path=fallback_path,
+                            media_type="video/mp4",
+                            filename=f"{safe_title}.mp4",
+                            background=BackgroundTask(cleanup_file, fallback_path),
+                        )
+                    cleanup_file(fallback_path)
+
         cleanup_file(tmp_dir)
         version_info = getattr(yt_dlp.version, "__version__", "unknown")
         return {
