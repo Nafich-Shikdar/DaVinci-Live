@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Response, Request
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel
 from typing import List, Optional
@@ -8,6 +10,9 @@ import random
 import zipfile
 import datetime
 import struct
+import os
+import tempfile
+import uuid
 
 try:
     import pyzipper
@@ -18,6 +23,11 @@ try:
     from fontTools.ttLib import TTFont
 except ImportError:
     TTFont = None
+
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
 
 app = FastAPI()
 
@@ -33,19 +43,24 @@ ARABIC_WORDS_POOL = ["الخط العربي", "جماليات", "إبداع", "�
 FONT_BYTES_CACHE = {}
 MAX_CACHE_SIZE = 30
 
+# ভিডিও ডাউনলোড সংক্রান্ত কনফিগারেশন
+MAX_TELEGRAM_SIZE = 49 * 1024 * 1024  # টেলিগ্রাম বট আপলোড লিমিট (~50MB)
+
+
 def fetch_font_bytes_cached(font_url: str) -> bytes:
     if font_url in FONT_BYTES_CACHE:
         return FONT_BYTES_CACHE[font_url]
-    
+
     res = requests.get(font_url, timeout=20)
     raw_bytes = res.content
-    
+
     if len(FONT_BYTES_CACHE) >= MAX_CACHE_SIZE:
         first_key = next(iter(FONT_BYTES_CACHE))
         FONT_BYTES_CACHE.pop(first_key)
-        
+
     FONT_BYTES_CACHE[font_url] = raw_bytes
     return raw_bytes
+
 
 try:
     hs_res = requests.get(HIND_SILIGURI_URL, timeout=10)
@@ -53,11 +68,13 @@ try:
 except Exception:
     HIND_SILIGURI_BYTES = None
 
+
 def get_hind_siliguri_font(size):
     if HIND_SILIGURI_BYTES:
         HIND_SILIGURI_BYTES.seek(0)
         return ImageFont.truetype(HIND_SILIGURI_BYTES, size=size)
     return ImageFont.load_default()
+
 
 def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, min_size=20):
     for size in range(start_size, min_size - 1, -2):
@@ -82,6 +99,7 @@ def get_auto_fit_font(font_bytes, text, max_width, max_height, start_size=80, mi
     except Exception:
         return get_hind_siliguri_font(min_size)
 
+
 @app.get("/")
 def home():
     return {"status": "DaVinci 3-Language Preview Engine Active"}
@@ -90,7 +108,7 @@ def home():
 # ZIP MANAGER (অন্যান্য ফাংশনগুলো আগের মতোই থাকবে)
 # -------------------------------------------------------------
 # [পূর্বের জিপ ম্যানেজার ফাংশনগুলো এখানে থাকবে...]
-# (কোডটি ছোট রাখতে এখানে শুধু পরিবর্তিত অংশটি দেওয়া হলো)
+# (কোডটি ছোট রাখতে এখানে শুধু পরিবর্তিত অংশটি দেওয়া হলো)
 
 # -------------------------------------------------------------
 # 🔥 UPDATED PREVIEW RENDERER – সাপোর্ট (bn, en, mixed)
@@ -145,7 +163,7 @@ def generate_preview(
         if bg_theme == "light":
             canvas_bg, card_bg, border_c, text_c, sub_c = "#f8fafc", "#ffffff", "#e2e8f0", "#0f172a", "#64748b"
         elif bg_theme == "transparent":
-            canvas_bg, card_bg, border_c, text_c, sub_c = (0,0,0,0), "#131e30", "#1e293b", "#ffffff", "#64748b"
+            canvas_bg, card_bg, border_c, text_c, sub_c = (0, 0, 0, 0), "#131e30", "#1e293b", "#ffffff", "#64748b"
         else:
             canvas_bg, card_bg, border_c, text_c, sub_c = "#0b1320", "#131e30", "#1e293b", "#ffffff", "#64748b"
 
@@ -212,6 +230,90 @@ def generate_preview(
 
     except Exception as e:
         return {"error": str(e)}
+
+
+# -------------------------------------------------------------
+# 🎬 নতুন ফিচার: ভিডিও ডাউনলোডার (yt-dlp ভিত্তিক, সব প্ল্যাটফর্ম সাপোর্ট)
+# -------------------------------------------------------------
+def cleanup_file(path: str):
+    """ভিডিও পাঠানোর পর ডিস্ক থেকে টেম্প ফাইল মুছে ফেলে"""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+            parent_dir = os.path.dirname(path)
+            if parent_dir and os.path.isdir(parent_dir):
+                try:
+                    os.rmdir(parent_dir)
+                except OSError:
+                    pass  # ডিরেক্টরি খালি না থাকলে সমস্যা নেই
+    except Exception:
+        pass
+
+
+@app.get("/download")
+def download_video(url: str):
+    """
+    যেকোনো পাবলিক প্ল্যাটফর্মের (YouTube, Facebook, Instagram, TikTok,
+    Twitter/X, ইত্যাদি) ভিডিও লিংক দিলে yt-dlp দিয়ে ডাউনলোড করে ফাইল রিটার্ন করে।
+    """
+    if not yt_dlp:
+        return {"error": "yt-dlp ইনস্টল করা নেই। requirements.txt-এ yt-dlp যোগ করুন।"}
+
+    tmp_dir = tempfile.mkdtemp(prefix="vid_")
+    out_template = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.%(ext)s")
+
+    ydl_opts = {
+        "outtmpl": out_template,
+        "format": "best[filesize<49M]/best[height<=720]/best",
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": MAX_TELEGRAM_SIZE,
+        "socket_timeout": 30,
+        "retries": 3,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filepath = ydl.prepare_filename(info)
+
+            # merge_output_format প্রয়োগ হলে এক্সটেনশন বদলে যেতে পারে, তাই যাচাই করি
+            if not os.path.exists(filepath):
+                base, _ = os.path.splitext(filepath)
+                for ext in ["mp4", "mkv", "webm"]:
+                    candidate = base + "." + ext
+                    if os.path.exists(candidate):
+                        filepath = candidate
+                        break
+
+        if not os.path.exists(filepath):
+            cleanup_file(filepath)
+            return {"error": "ডাউনলোড ব্যর্থ হয়েছে, ফাইল পাওয়া যায়নি।"}
+
+        size = os.path.getsize(filepath)
+        if size > MAX_TELEGRAM_SIZE:
+            cleanup_file(filepath)
+            return {"error": "ভিডিওটি প্রায় ৫০MB এর বেশি, টেলিগ্রাম বট দিয়ে পাঠানো সম্ভব নয়।"}
+
+        title = (info.get("title") or "video")
+        safe_title = "".join(c for c in title if c.isalnum() or c in " _-").strip()[:60] or "video"
+
+        return FileResponse(
+            path=filepath,
+            media_type="video/mp4",
+            filename=f"{safe_title}.mp4",
+            background=BackgroundTask(cleanup_file, filepath),
+        )
+
+    except yt_dlp.utils.DownloadError as e:
+        cleanup_file(tmp_dir)
+        return {"error": f"লিংক থেকে ভিডিও পাওয়া যায়নি বা সাপোর্টেড নয়: {str(e)}"}
+    except Exception as e:
+        cleanup_file(tmp_dir)
+        return {"error": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn
