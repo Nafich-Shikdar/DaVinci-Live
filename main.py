@@ -285,10 +285,21 @@ def download_video(url: str):
     }
 
     # 🍪 ঐচ্ছিক: কুকিজ ফাইল দেওয়া থাকলে ব্যবহার করবে (env var দিয়ে সেট করুন YTDLP_COOKIES_FILE)
-    # এটা বট-চেক ১০০% এড়াতে সবচেয়ে নির্ভরযোগ্য উপায়, বিশেষ করে বয়স-সীমাবদ্ধ/প্রাইভেট ভিডিওর জন্য।
-    cookies_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
-    if cookies_path and os.path.exists(cookies_path):
-        ydl_opts["cookiefile"] = cookies_path
+    # এটা বট-চেক এড়াতে সবচেয়ে নির্ভরযোগ্য উপায়, বিশেষ করে বয়স-সীমাবদ্ধ/প্রাইভেট ভিডিওর জন্য।
+    #
+    # ⚠️ গুরুত্বপূর্ণ: Render-এর Secret File মাউন্ট (/etc/secrets/...) READ-ONLY।
+    # yt-dlp ব্যবহারের পর সেশন কুকি আপডেট হলে সেটা একই ফাইলে লিখতে চেষ্টা করে,
+    # read-only পাথে লিখলে "[Errno 30] Read-only file system" এরর দেয়।
+    # তাই প্রতি রিকোয়েস্টে ফাইলটা একটা লিখনযোগ্য টেম্প কপিতে নিয়ে সেটা ব্যবহার করা হয়।
+    source_cookies_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if source_cookies_path and os.path.exists(source_cookies_path):
+        writable_cookies_path = os.path.join(tmp_dir, "cookies.txt")
+        try:
+            import shutil
+            shutil.copy(source_cookies_path, writable_cookies_path)
+            ydl_opts["cookiefile"] = writable_cookies_path
+        except Exception:
+            pass  # কপি ব্যর্থ হলে কুকি ছাড়াই এগিয়ে যাবে
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
