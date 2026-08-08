@@ -250,6 +250,52 @@ def cleanup_file(path: str):
         pass
 
 
+@app.get("/debug")
+def debug_info():
+    """
+    🔍 ডায়াগনস্টিক এন্ডপয়েন্ট — ভিডিও ডাউনলোড ঠিকভাবে কনফিগার হয়েছে কিনা যাচাই করতে।
+    কোনো সংবেদনশীল কুকি ডেটা এক্সপোজ করে না, শুধু স্ট্যাটাস দেখায়।
+    """
+    info = {
+        "yt_dlp_installed": yt_dlp is not None,
+        "yt_dlp_version": None,
+        "invidious_plugin_loaded": False,
+        "cookies_env_set": False,
+        "cookies_file_path": None,
+        "cookies_file_exists": False,
+        "cookies_file_size_bytes": None,
+        "proxy_env_set": False,
+    }
+
+    if yt_dlp:
+        try:
+            info["yt_dlp_version"] = yt_dlp.version.__version__
+        except Exception:
+            info["yt_dlp_version"] = "unknown"
+
+        try:
+            # Invidious প্লাগইন লোড হলে extractor list-এ থাকার কথা
+            extractor_names = [e.IE_NAME for e in yt_dlp.extractor.gen_extractors() if hasattr(e, "IE_NAME")]
+            info["invidious_plugin_loaded"] = any("invidious" in (n or "").lower() for n in extractor_names)
+        except Exception as e:
+            info["invidious_plugin_loaded"] = f"check failed: {str(e)}"
+
+    cookies_path = os.environ.get("YTDLP_COOKIES_FILE", "").strip()
+    if cookies_path:
+        info["cookies_env_set"] = True
+        info["cookies_file_path"] = cookies_path
+        info["cookies_file_exists"] = os.path.exists(cookies_path)
+        if info["cookies_file_exists"]:
+            try:
+                info["cookies_file_size_bytes"] = os.path.getsize(cookies_path)
+            except Exception:
+                pass
+
+    info["proxy_env_set"] = bool(os.environ.get("YTDLP_PROXY", "").strip())
+
+    return info
+
+
 @app.get("/download")
 def download_video(url: str):
     """
